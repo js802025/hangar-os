@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Opens Chromium on the agent's desktop with the agent's own profile.
+# The sandbox needs user namespaces the container doesn't get, so it's off;
+# the container itself is the sandbox. --test-type hides the warning bar
+# about that, which would otherwise waste screen space for computer use.
+SIZE="${HANGAR_SCREEN:-1280x800}"
+exec chromium \
+    --no-sandbox --test-type --disable-dev-shm-usage --no-first-run --no-default-browser-check \
+    --disable-features=Translate --password-store=basic \
+    --user-data-dir="$HOME/.config/hangar-chromium" \
+    --remote-debugging-port=9222 --remote-debugging-address=127.0.0.1 \
+    --window-position=0,0 --window-size="${SIZE/x/,}" --start-maximized \
+    "$@"

@@ -1,0 +1,4 @@
+# Merged into /etc/xdg/kglobalshortcutsrc by the OS image (M8).
+# The Mission Control key on Apple keyboards sends "Launch (A)"; Meta+S works everywhere.
+[services][dev.hangar.overview.desktop]
+_launch=Launch (A)\tMeta+S

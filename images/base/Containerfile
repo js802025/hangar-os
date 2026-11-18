@@ -1,0 +1,51 @@
+# Hangar base agent image: a hidden X desktop (TigerVNC Xvnc + Openbox),
+# Chromium, noVNC for viewing, and the desktop-control MCP server.
+# Multi-arch: everything comes from Debian, which ships arm64 and amd64.
+#
+# Build context is images/:  docker build -f images/base/Containerfile images
+FROM docker.io/library/debian:trixie-slim
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    LANG=C.UTF-8 \
+    DISPLAY=:1 \
+    HANGAR_SCREEN=1280x800
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        tini ca-certificates curl wget git jq ripgrep unzip less procps nano \
+        python3 python3-venv python3-pip nodejs npm \
+        tigervnc-standalone-server tigervnc-tools openbox x11-xserver-utils \
+        xdotool xclip xterm dbus-x11 \
+        novnc websockify \
+        chromium \
+        fonts-noto-core fonts-noto-cjk fonts-noto-color-emoji fonts-dejavu-core \
+    && rm -rf /var/lib/apt/lists/*
+
+# Agent harnesses. Credentials never live in the image: each agent gets its
+# account's volume mounted at /hangar/account (see hangar/accounts.py).
+RUN npm install -g --no-fund --no-audit @anthropic-ai/claude-code @openai/codex \
+    && npm cache clean --force
+ENV DISABLE_AUTOUPDATER=1 \
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
+
+# Desktop-control MCP server in its own venv.
+COPY mcp-desktop /opt/hangar/mcp-desktop
+RUN python3 -m venv /opt/hangar/venv \
+    && /opt/hangar/venv/bin/pip install --no-cache-dir /opt/hangar/mcp-desktop
+
+COPY base/rootfs/ /
+RUN chmod +x /opt/hangar/bin/* \
+    && useradd --create-home --shell /bin/bash --uid 1000 agent \
+    && mkdir -p /home/agent/workspace /home/agent/.hangar /hangar/account \
+    && chown -R agent:agent /home/agent /hangar/account
+
+USER agent
+WORKDIR /home/agent/workspace
+ENV PATH=/opt/hangar/bin:/opt/hangar/venv/bin:$PATH
+
+# 6080 = noVNC (websockify), 8765 = MCP (streamable HTTP at /mcp).
+# Publish these only on 127.0.0.1; the Hangar daemon proxies them.
+EXPOSE 6080 8765
+HEALTHCHECK --interval=5s --timeout=3s --start-period=5s \
+    CMD curl -fsS http://127.0.0.1:8765/healthz || exit 1
+
+ENTRYPOINT ["/usr/bin/tini", "--", "/opt/hangar/bin/hangar-session"]

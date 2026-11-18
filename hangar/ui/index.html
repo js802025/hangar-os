@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hangar</title><link rel="icon" href="/favicon.svg"><link rel="stylesheet" href="/ui/app.css"></head>
+<body>
+<header class="top">
+  <a class="brand" href="#/"><img src="/favicon.svg" alt="" width="26" height="26"><span>Hangar</span></a>
+  <nav>
+    <a href="#/" data-nav="spaces">Spaces</a>
+    <a href="#/accounts" data-nav="accounts">Accounts</a>
+    <a href="#/models" data-nav="models">Models</a>
+    <a href="#/vault" data-nav="vault">Passwords <span class="count"></span></a>
+    <a href="#/settings" data-nav="settings">Settings</a>
+  </nav>
+  <span class="conn" id="conn" title="Live updates"></span>
+  <button class="primary" id="new-agent">+ New agent</button>
+</header>
+<div id="requests" style="display:none"></div>
+<main id="view"></main>
+<div id="toasts" aria-live="polite"></div>
+<dialog id="dlg"></dialog>
+<script src="/ui/vault.js"></script>
+<script src="/ui/app.js"></script>
+</body></html>

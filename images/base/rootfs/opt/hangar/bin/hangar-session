@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# Starts an agent's hidden desktop and its services. Runs as PID 1's child (tini).
+#   Xvnc :1      -> X server + VNC on 127.0.0.1:5901 (never on the host screen)
+#   openbox      -> window manager
+#   websockify   -> noVNC on :6080
+#   MCP server   -> desktop control on :8765/mcp
+# Both published ports require $HANGAR_AGENT_TOKEN (Basic auth for noVNC,
+# Bearer for MCP), so other agents can't reach this desktop. The daemon holds
+# every agent's token and proxies them for the user.
+# If HANGAR_AGENT_CMD is set, it runs after the desktop is up (used from M3 on).
+set -euo pipefail
+
+export DISPLAY="${DISPLAY:-:1}"
+GEOM="${HANGAR_SCREEN:-1280x800}"
+LOG=/home/agent/.hangar/logs
+mkdir -p "$LOG"
+
+# Clear locks left by a previous run of this container (stop/start).
+rm -f /tmp/.X1-lock /tmp/.X11-unix/X1 "$HOME"/.config/hangar-chromium/Singleton* 2>/dev/null || true
+
+Xvnc "$DISPLAY" -geometry "$GEOM" -depth 24 \
+    -SecurityTypes None -interface 127.0.0.1 -rfbport 5901 \
+    -AlwaysShared -AcceptSetDesktopSize=0 >"$LOG/xvnc.log" 2>&1 &
+CORE=($!)
+
+# Wait for the X server to accept connections.
+for _ in $(seq 1 100); do
+    xsetroot -solid '#14161c' >/dev/null 2>&1 && break
+    sleep 0.1
+done
+
+openbox >"$LOG/openbox.log" 2>&1 &
+CORE+=($!)
+
+AUTH=()
+if [[ -n "${HANGAR_AGENT_TOKEN:-}" ]]; then
+    AUTH=(--web-auth --auth-plugin BasicHTTPAuth --auth-source "hangar:${HANGAR_AGENT_TOKEN}")
+fi
+websockify "${AUTH[@]}" --web /usr/share/novnc 0.0.0.0:6080 127.0.0.1:5901 >"$LOG/websockify.log" 2>&1 &
+CORE+=($!)
+
+hangar-desktop-mcp >"$LOG/mcp.log" 2>&1 &
+CORE+=($!)
+
+echo "hangar-session: desktop ${GEOM} on ${DISPLAY}, noVNC :6080, MCP :8765/mcp"
+
+if [[ -n "${HANGAR_AGENT_CMD:-}" ]]; then
+    bash -c "$HANGAR_AGENT_CMD" >>"$LOG/agent.log" 2>&1 &
+fi
+
+# Exit (and let the container stop) if any core service dies. The agent's
+# task finishing is normal and keeps the desktop up.
+wait -n "${CORE[@]}"
+echo "hangar-session: a core service exited; stopping" >&2
+exit 1

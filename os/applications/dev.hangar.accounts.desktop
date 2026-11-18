@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Hangar Accounts
+Comment=AI subscriptions and API keys
+Exec=hangar-app accounts
+Icon=dev.hangar.accounts
+Categories=Settings;
+StartupWMClass=dev.hangar.accounts
+StartupNotify=true

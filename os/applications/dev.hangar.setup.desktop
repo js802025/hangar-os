@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Hangar Setup
+Comment=Set up accounts, local models and notifications
+Exec=hangar-app setup
+Icon=dev.hangar.setup
+Categories=Settings;
+StartupWMClass=dev.hangar.setup

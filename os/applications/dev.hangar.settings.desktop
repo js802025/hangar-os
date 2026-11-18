@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Hangar Settings
+Comment=Notifications and access
+Exec=hangar-app settings
+Icon=dev.hangar.settings
+Categories=Settings;
+StartupWMClass=dev.hangar.settings
+StartupNotify=true

@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+# Runs one task with the agent's harness, chosen by $HANGAR_MODEL:
+#   claude[:<model>]   Claude Code (subscription login or Anthropic API key)
+#   codex[:<model>]    Codex CLI (ChatGPT login or OpenAI API key)
+#   local:<model>      built-in loop against LM Studio ($HANGAR_LLM_URL)
+# Usage: hangar-agent ["task"]   (defaults to $HANGAR_TASK)
+set -uo pipefail
+
+TASK="${1:-${HANGAR_TASK:-}}"
+MODEL="${HANGAR_MODEL:-}"
+STATE=/home/agent/.hangar
+[[ -z "$TASK" ]] && { echo "hangar-agent: no task"; exit 0; }
+[[ -z "$MODEL" ]] && { hangar-report error "No model set for this agent, so it can't start the task."; exit 1; }
+
+printf '%s' "$TASK" > "$STATE/task.txt"
+date -u +%FT%TZ > "$STATE/task-started"
+
+# Wait for the desktop MCP server.
+for _ in $(seq 1 60); do curl -fsS -m 1 http://127.0.0.1:8765/healthz >/dev/null && break; sleep 0.5; done
+
+SYS="You are running inside Hangar on your own private Linux desktop (a container; nothing
+you do touches the user's screen). Desktop and browser tools come from the 'hangar' MCP
+server: for websites prefer browser_navigate / browser_snapshot / browser_click /
+browser_type (numbered elements); use screenshot + click for other apps. Files go in
+/home/agent/workspace. Nobody is watching to answer questions: work autonomously.
+To sign in to a website, open its sign-in page and call the hangar request_login tool
+(and request_code for verification codes): the user approves and Hangar fills it in.
+Never ask for, guess or type passwords yourself.
+Post short progress updates with the hangar report tool, and finish with
+report(message=<summary>, status=\"done\", final=true), or status=\"waiting_on_user\"
+with final=true if you need the user."
+
+finals() { local n; n=$(grep -c '"final": true' "$STATE/reports.jsonl" 2>/dev/null); echo "${n:-0}"; }
+finals_before=$(finals)
+hangar-report working "Started: ${TASK:0:200}"
+
+KEYFILE=/hangar/account/api_key
+sub="${MODEL#*:}"; [[ "$sub" == "$MODEL" ]] && sub=""
+
+case "$MODEL" in
+  claude|claude:*)
+    if [[ -s "$KEYFILE" ]]; then export ANTHROPIC_API_KEY="$(cat "$KEYFILE")"; fi
+    MCPCFG="$STATE/mcp.json"
+    jq -n --arg t "${HANGAR_AGENT_TOKEN:-}" '{mcpServers: {hangar: {type: "http",
+      url: "http://127.0.0.1:8765/mcp", headers: {Authorization: ("Bearer " + $t)}}}}' > "$MCPCFG"
+    chmod 600 "$MCPCFG"
+    claude -p "$TASK" ${sub:+--model "$sub"} \
+      --mcp-config "$MCPCFG" --dangerously-skip-permissions \
+      --append-system-prompt "$SYS" --output-format stream-json --verbose
+    code=$?
+    # Claude reports failures (bad key, expired login, usage limits) in its result line.
+    res=$(grep -h '"type":"result"' "$STATE/logs/agent.log" 2>/dev/null | tail -1)
+    if [[ -n "$res" && "$(jq -r '.is_error' <<<"$res" 2>/dev/null)" == "true" ]]; then
+      echo "hangar-error: Claude: $(jq -r '.result' <<<"$res" | head -c 300)"
+      [[ $code -eq 0 ]] && code=1
+    fi
+    ;;
+  codex|codex:*)
+    if [[ -s "$KEYFILE" ]]; then export OPENAI_API_KEY="$(cat "$KEYFILE")"; fi
+    codex exec ${sub:+-m "$sub"} --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check \
+      -c 'mcp_servers.hangar.url="http://127.0.0.1:8765/mcp"' \
+      -c 'mcp_servers.hangar.bearer_token_env_var="HANGAR_AGENT_TOKEN"' \
+      "$SYS
+
+Task: $TASK"
+    code=$?
+    ;;
+  local:*)
+    hangar-local-agent --model "${MODEL#local:}" "$TASK"
+    code=$?
+    ;;
+  *)
+    hangar-report error "Unknown model '$MODEL'. Use claude, codex or local:<model>."
+    exit 1
+    ;;
+esac
+echo "hangar-agent: harness exited with code $code" >&2
+
+if [[ "$(finals)" == "$finals_before" ]]; then
+  if [[ $code -eq 0 ]]; then
+    hangar-report done "Finished (the agent didn't write a summary). See: hangar logs ${HANGAR_AGENT:-agent} -s agent"
+  else
+    reason=$(grep -h '^hangar-error: ' "$STATE/logs/agent.log" 2>/dev/null | tail -1 | cut -c15-)
+    hangar-report error "${reason:-The harness exited with code $code.} See: hangar logs ${HANGAR_AGENT:-agent} -s agent"
+  fi
+fi
+exit $code

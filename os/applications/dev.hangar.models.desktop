@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Hangar Models
+Comment=Local AI models (LM Studio)
+Exec=hangar-app models
+Icon=dev.hangar.models
+Categories=Utility;
+StartupWMClass=dev.hangar.models
+StartupNotify=true

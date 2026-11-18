@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Hangar Overview
+Comment=Every agent at once (the Spaces key)
+Exec=hangar-app spaces --overview
+Icon=dev.hangar.spaces
+NoDisplay=true

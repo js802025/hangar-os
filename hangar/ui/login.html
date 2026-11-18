@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hangar · Sign in</title><link rel="icon" href="/favicon.svg"><link rel="stylesheet" href="/ui/app.css"></head>
+<body class="login">
+<form class="login-card" method="get" action="/login">
+  <img src="/favicon.svg" alt="" width="48" height="48">
+  <h1>Hangar</h1>
+  <p class="dim">Paste the admin token to open Spaces. On the Hangar machine, run
+    <code>hangar daemon token</code>, or open <code>hangar ui</code> there, which signs you in.</p>
+  <input type="hidden" name="next" value="{{next}}">
+  <input name="token" type="password" placeholder="Admin token" autocomplete="current-password" autofocus required>
+  <p class="error">{{error}}</p>
+  <button class="primary" type="submit">Open Spaces</button>
+</form>
+</body></html>

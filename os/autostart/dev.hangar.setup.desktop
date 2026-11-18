@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Hangar Setup
+Comment=First-boot setup (exits right away once setup has run)
+Exec=hangar-app setup --first-boot
+Icon=dev.hangar.setup
+X-KDE-autostart-phase=1
+NoDisplay=true

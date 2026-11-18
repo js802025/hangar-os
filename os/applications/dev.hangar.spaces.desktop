@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Hangar
+Comment=See and control your AI agents' desktops
+Exec=hangar-app spaces
+Icon=dev.hangar.spaces
+Categories=System;Utility;
+StartupWMClass=dev.hangar.spaces
+StartupNotify=true
