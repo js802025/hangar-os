@@ -91,9 +91,14 @@ def main() -> None:
         print("local harness: text-call parsing, loop nudge, final report: ok")
 
         # 2. API-key account: stored safely, mounted, harness fails cleanly
+        from hangar import harness
+        if not harness.current(eng, "claude"):
+            print("installing Claude Code into its shared volume (one time)…")
+            harness.install(eng, "claude", quiet=True)
         acct = accts.create("m3-fake", "anthropic-key")
         accts.set_api_key(acct, "sk-ant-api03-FAKE-TEST-KEY")
         vols, env = accts.mounts_and_env(acct)
+        vols.update(harness.mount(eng, "claude"))
         eng.create(AgentSpec(name="m3-key", model="claude", account="m3-fake", task="Say hi",
                              volumes=vols, env=env))
         eng.wait_ready("m3-key", timeout=120)

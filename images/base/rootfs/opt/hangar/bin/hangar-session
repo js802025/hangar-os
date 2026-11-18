@@ -15,6 +15,11 @@ GEOM="${HANGAR_SCREEN:-1280x800}"
 LOG=/home/agent/.hangar/logs
 mkdir -p "$LOG"
 
+# A session bus plus the accessibility bus, so apps expose their UI tree
+# (hangar-a11y / the app_* MCP tools). Everything below inherits it.
+eval "$(dbus-launch --sh-syntax)"
+export NO_AT_BRIDGE=0 QT_LINUX_ACCESSIBILITY_ALWAYS_ON=1 QT_ACCESSIBILITY=1
+
 # Clear locks left by a previous run of this container (stop/start).
 rm -f /tmp/.X1-lock /tmp/.X11-unix/X1 "$HOME"/.config/hangar-chromium/Singleton* 2>/dev/null || true
 
@@ -31,6 +36,8 @@ done
 
 openbox >"$LOG/openbox.log" 2>&1 &
 CORE+=($!)
+
+/usr/libexec/at-spi-bus-launcher --launch-immediately >"$LOG/atspi.log" 2>&1 &
 
 AUTH=()
 if [[ -n "${HANGAR_AGENT_TOKEN:-}" ]]; then

@@ -15,15 +15,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         python3 python3-venv python3-pip nodejs npm \
         tigervnc-standalone-server tigervnc-tools openbox x11-xserver-utils \
         xdotool xclip xterm dbus-x11 \
+        at-spi2-core libatk-adaptor python3-gi gir1.2-atspi-2.0 \
+        mousepad \
         novnc websockify \
         chromium \
         fonts-noto-core fonts-noto-cjk fonts-noto-color-emoji fonts-dejavu-core \
     && rm -rf /var/lib/apt/lists/*
 
-# Agent harnesses. Credentials never live in the image: each agent gets its
-# account's volume mounted at /hangar/account (see hangar/accounts.py).
-RUN npm install -g --no-fund --no-audit @anthropic-ai/claude-code @openai/codex \
-    && npm cache clean --force
+# Agent harnesses (Claude Code, Codex CLI) are NOT in the image: Hangar installs
+# the ones you use into shared volumes, mounted read-only at /opt/harness/<name>
+# (see hangar/harness.py). Credentials aren't either: each agent gets its
+# account's volume at /hangar/account (see hangar/accounts.py).
 ENV DISABLE_AUTOUPDATER=1 \
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
 
@@ -40,12 +42,15 @@ RUN chmod +x /opt/hangar/bin/* \
 
 USER agent
 WORKDIR /home/agent/workspace
-ENV PATH=/opt/hangar/bin:/opt/hangar/venv/bin:$PATH
+ENV PATH=/opt/hangar/bin:/opt/hangar/venv/bin:/opt/harness/claude/bin:/opt/harness/codex/bin:$PATH
 
 # 6080 = noVNC (websockify), 8765 = MCP (streamable HTTP at /mcp).
 # Publish these only on 127.0.0.1; the Hangar daemon proxies them.
 EXPOSE 6080 8765
 HEALTHCHECK --interval=5s --timeout=3s --start-period=5s \
     CMD curl -fsS http://127.0.0.1:8765/healthz || exit 1
+
+LABEL dev.hangar.flavor="base" \
+      dev.hangar.flavor.description="Browser, terminal and text editor"
 
 ENTRYPOINT ["/usr/bin/tini", "--", "/opt/hangar/bin/hangar-session"]

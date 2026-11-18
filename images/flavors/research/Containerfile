@@ -1,0 +1,10 @@
+# research: the browser plus tools for reading what it finds (PDFs, images).
+ARG BASE=localhost/hangar-base:dev
+FROM ${BASE}
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        evince poppler-utils ristretto \
+    && rm -rf /var/lib/apt/lists/*
+USER agent
+LABEL dev.hangar.flavor="research" \
+      dev.hangar.flavor.description="Web research: browser, PDF and image viewers, pdftotext"

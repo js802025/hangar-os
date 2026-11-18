@@ -7,6 +7,7 @@ message meant for the user; soft problems come back as warnings.
 
 from __future__ import annotations
 
+from hangar import harness as harness_mod
 from hangar import models as lm
 from hangar.accounts import Accounts
 from hangar.engine import AgentSpec, Engine, check_shares
@@ -14,6 +15,14 @@ from hangar.engine import AgentSpec, Engine, check_shares
 
 class SetupError(Exception):
     pass
+
+
+class HarnessMissing(SetupError):
+    """The agent's harness (Claude Code / Codex) isn't installed yet."""
+
+    def __init__(self, msg: str, harness: str) -> None:
+        super().__init__(msg)
+        self.harness = harness
 
 
 def prepare(eng: Engine, spec: AgentSpec) -> list[str]:
@@ -43,6 +52,10 @@ def prepare(eng: Engine, spec: AgentSpec) -> list[str]:
             acct = matches[0]
         spec.account = acct.name
         vols, env = accts.mounts_and_env(acct)
+        try:
+            vols.update(harness_mod.mount(eng, harness))
+        except harness_mod.NotInstalled as e:
+            raise HarnessMissing(str(e), harness) from e
         spec.volumes.update(vols)
         spec.env.update(env)
     elif harness == "local":

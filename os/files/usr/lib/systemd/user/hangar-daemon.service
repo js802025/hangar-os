@@ -1,0 +1,12 @@
+[Unit]
+Description=Hangar daemon (agents' reports, notifications, live views, vault)
+Wants=podman.socket
+After=podman.socket network-online.target
+
+[Service]
+ExecStart=/usr/bin/hangar daemon
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target

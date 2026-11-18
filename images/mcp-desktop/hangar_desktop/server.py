@@ -41,7 +41,8 @@ mcp = FastMCP(
         "to see it; coordinates are screen pixels from the top-left. "
         "For web pages prefer the browser_* tools: browser_navigate, then "
         "browser_snapshot gives numbered elements to browser_click/browser_type; "
-        "fall back to screenshot + click for canvases and odd widgets. To sign in to a site, open "
+        "fall back to screenshot + click for canvases and odd widgets. For desktop apps use "
+        "app_snapshot / app_click / app_type the same way. To sign in to a site, open "
         "its sign-in page and call request_login; for verification codes call request_code. "
         "Never ask for or type passwords yourself. Call `report` to post progress, "
         "and `report(final=True)` with a summary when you finish or get stuck."
@@ -160,13 +161,15 @@ def scroll(direction: str = "down", amount: int = 3, x: int | None = None, y: in
 APPS = {
     "browser": ["hangar-browser"],
     "terminal": ["xterm"],
+    "editor": ["mousepad"],
 }
 
 
 @mcp.tool()
 def open_app(name: str, args: str = "") -> str:
-    """Open an app on the desktop. name: 'browser' (args = URL), 'terminal', or any
-    command on PATH (e.g. 'libreoffice'). Returns once its window appears or after ~10s."""
+    """Open an app on the desktop. name: 'browser' (args = URL), 'terminal', 'editor'
+    (a text editor; args = file), or any command on PATH (e.g. 'libreoffice --writer').
+    Returns once its window appears or after ~10s. Then use app_snapshot to read it."""
     _guard()
     cmd = APPS.get(name, [name]) + shlex.split(args)
     before = set(_windows())
@@ -184,6 +187,44 @@ def _windows() -> list[str]:
     out = subprocess.run(["xdotool", "search", "--onlyvisible", "--name", "."],
                          capture_output=True, text=True)
     return out.stdout.split()
+
+
+def _a11y(*args: str, timeout: int = 30) -> str:
+    r = subprocess.run(["hangar-a11y", *args], capture_output=True, text=True, timeout=timeout)
+    if r.returncode:
+        raise RuntimeError((r.stderr or r.stdout).strip().splitlines()[-1] if (r.stderr or r.stdout).strip()
+                           else "accessibility call failed")
+    return r.stdout.strip()
+
+
+@mcp.tool()
+def app_snapshot(app: str = "") -> str:
+    """Read desktop apps (not web pages) as numbered elements: buttons, menus, text
+    fields, with their values. Like browser_snapshot, for GTK/Qt apps and LibreOffice.
+    `app` filters by app name (e.g. "soffice", "mousepad"). Act on numbers with app_click /
+    app_type. Much more reliable than screenshot + click when it works."""
+    return _a11y("snapshot", app)
+
+
+@mcp.tool()
+def app_click(ref: int) -> str:
+    """Click / activate element [ref] from the latest app_snapshot."""
+    _guard()
+    return _a11y("click", str(ref))
+
+
+@mcp.tool()
+def app_type(ref: int, text: str, replace: bool = False) -> str:
+    """Type text into element [ref] (focuses it first). replace=True swaps the field's
+    whole text instead of typing at the cursor."""
+    _guard()
+    return _a11y("set" if replace else "type", str(ref), text, timeout=120)
+
+
+@mcp.tool()
+def app_read(ref: int) -> str:
+    """The full text of element [ref] (e.g. a document or a long field)."""
+    return _a11y("read", str(ref))
 
 
 @mcp.tool()

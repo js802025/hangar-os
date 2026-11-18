@@ -80,6 +80,17 @@ def apply(language: str | None = None, keyboard: str | None = None, timezone: st
     return done
 
 
+LMSTUDIO_INSTALLER = "https://lmstudio.ai/install.sh"   # LM Studio's official headless install (llmster + lms)
+
+
+def lmstudio_install_argv() -> list[str]:
+    """Install LM Studio's headless server into ~/.lmstudio (no root needed)."""
+    if not LINUX:
+        raise RuntimeError("on a Mac, install LM Studio from lmstudio.ai")
+    return ["sh", "-c", f"curl -fsSL {LMSTUDIO_INSTALLER} | sh && ~/.lmstudio/bin/lms server start "
+                        "--port 1234 --bind 0.0.0.0 && echo 'LM Studio is ready.'"]
+
+
 def online() -> bool:
     try:
         socket.create_connection(("1.1.1.1", 443), timeout=3).close()

@@ -5,7 +5,11 @@ its own hidden desktop (browser, apps, computer use) that never touches your
 screen, mouse or keyboard. You watch them all as live thumbnails, take over
 any one, and hand it back.
 
-> Status: **M6**: a first-boot setup wizard (accounts, local models picked
+> Status: **M8**: an installable OS for the spare PC (Fedora Kinoite + Hangar,
+> built in GitHub Actions). Agent images are pulled from your GitHub registry
+> and harnesses are installed on demand. Before that (M7): workspace snapshots with rollback, per-agent network
+> allowlists, and research / coding / office flavors whose apps agents can
+> read through the accessibility tree. Before that (M6): a first-boot setup wizard (accounts, local models picked
 > for your hardware, phone notifications), plus native desktop apps (Qt): **Hangar** shows every agent as a
 > live thumbnail, with a Mission Control-style overview, and lets you watch,
 > take over and give tasks. Alongside it are **Passwords**, **Accounts**,
@@ -39,7 +43,7 @@ their socket, or set `DOCKER_HOST`) and [uv](https://docs.astral.sh/uv/).
 
 ```bash
 uv sync          # Python deps for the engine and tests
-make base        # build the agent image for this machine (arm64 on a Mac)
+make images      # base agent image + network gateway + flavors (arm64 on a Mac); `make base` for just the base
 make smoke       # M1: one agent: screenshot, open a browser, report
 uv run python tests/smoke_m2.py   # M2: three agents at once, browser tools, takeover
 uv run python tests/smoke_m3.py   # M3: local harness (fake model), API-key account
@@ -48,6 +52,7 @@ uv run python tests/smoke_m5.py   # M5: Spaces API: create with shares, accounts
 uv run python tests/smoke_vault.py  # Passwords: an agent signs in to a fake site without seeing the password
 uv run --extra apps python tests/smoke_apps.py  # native apps, offscreen; screenshots in out/apps-*.png
 uv run --extra apps python tests/smoke_setup.py # setup wizard, every step; screenshots in out/setup-*.png
+uv run python tests/smoke_m7.py   # M7: snapshots, accessibility tools, network allowlists, flavors
 ```
 
 Screenshots from the smoke test land in `out/`. `make clean` removes all
@@ -208,7 +213,7 @@ uv run hangar release scout        # hand it back
 uv run hangar logs scout           # session log + reports (-s mcp for one service)
 uv run hangar shell scout          # bash inside the agent
 uv run hangar stop|start scout
-uv run hangar destroy scout        # removes it and its files (--keep-home to keep)
+uv run hangar destroy scout        # removes it, its files and snapshots (--keep-home to keep)
 uv run hangar new reader --share ~/Documents/papers           # read-only at ~/shared/papers
 uv run hangar new writer --share ~/Projects/site:rw           # writable
 ```
@@ -218,7 +223,99 @@ at `/home/agent/shared/<folder>`, read-only unless you add `:rw`. Hangar
 refuses to share your whole home folder, `/`, or anything that is or contains
 `~/.ssh`, `~/.gnupg`, cloud credentials, keyrings or Hangar's own config.
 
-`--flavor` is stored now and gets real images in M7.
+## Flavors
+
+Every agent starts from the base image (Chromium, a terminal, the Mousepad
+text editor, the desktop-control MCP server). Flavors add apps on top:
+
+| flavor | adds |
+|---|---|
+| `base` | browser, terminal, text editor |
+| `research` | PDF and image viewers (Evince, Ristretto), `pdftotext` |
+| `coding` | compilers, Python dev headers + `uv`, GitHub CLI, Geany, neovim, sqlite |
+| `office` | LibreOffice Writer, Calc and Impress (GTK front end), document fonts, PDF viewer |
+
+```bash
+make flavors                       # build them all (or: make flavor F=office)
+uv run hangar flavors              # what's built
+uv run hangar new writer --flavor office --model claude --task "draft a cover letter in Writer"
+```
+
+### Adding a flavor
+
+1. Create `images/flavors/<name>/Containerfile`:
+
+   ```dockerfile
+   ARG BASE=localhost/hangar-base:dev
+   FROM ${BASE}
+   USER root
+   RUN apt-get update && apt-get install -y --no-install-recommends gimp inkscape \
+       && rm -rf /var/lib/apt/lists/*
+   USER agent
+   LABEL dev.hangar.flavor="design" \
+         dev.hangar.flavor.description="Graphics: GIMP and Inkscape"
+   ```
+
+2. `make flavor F=design`, then `hangar new artist --flavor design`.
+
+The `dev.hangar.flavor` label is how Hangar finds it: it shows up in
+`hangar flavors` and the New agent form, with no code changes. Prefer
+GTK or Qt apps. They expose their UI to the accessibility tools below, so
+agents can use them by element instead of by pixel. Keep to Debian
+packages (or anything multi-arch) so the flavor builds on both arm64 and amd64.
+
+## Desktop apps by element (accessibility)
+
+Like the browser snapshot, but for desktop apps. Each agent's session runs
+the AT-SPI accessibility bus, and `app_snapshot` lists an app's buttons,
+menus and text fields as numbered lines that `app_click` / `app_type` act on:
+
+```
+window "Untitled 1 - LibreOffice Writer" (app soffice)
+  [12] push button "Bold"
+  [40] paragraph "" (editable, focused)
+```
+
+It works for GTK and Qt apps and LibreOffice. For anything without an
+accessibility tree, agents fall back to screenshot + click.
+
+## Snapshots and rollback
+
+Before every task (`hangar run`, or Run in the Hangar app), Hangar copies the
+agent's `~/workspace` to the host (`~/.local/state/hangar/snapshots/`,
+outside the agent's reach). Undo whatever the agent did:
+
+```bash
+uv run hangar snapshots scout              # list (the last 20 are kept)
+uv run hangar rollback scout [<id>]        # restore (default: the latest)
+uv run hangar snapshot scout -m "before the big refactor"
+```
+
+A rollback snapshots the current workspace first, so it can be undone too. The
+Hangar app has the same under the agent's **History** tab. Writable shared
+folders aren't included, since they're your files on your disk. Workspaces
+over 2 GB are skipped (set `HANGAR_SNAPSHOT_MAX_GB` to change that).
+
+## Network allowlists
+
+By default agents have open internet access. To limit one to certain sites:
+
+```bash
+uv run hangar new scout --allow github.com --allow wikipedia.org --model claude --task "…"
+uv run hangar new hermit --offline          # nothing but its AI provider and local models
+uv run hangar net scout                     # allowed sites + recent allowed/blocked connections
+uv run hangar net scout --allow arxiv.org   # applies right away, no restart
+```
+
+Such an agent sits on its own internal network with no route out. Its only
+exit is a small per-agent gateway ([images/gateway](images/gateway)) that
+proxies HTTP(S) to allowed domains (subdomains included) and refuses
+everything else. It also refuses LAN and private addresses unless you name
+them. The agent's AI provider (Anthropic or OpenAI), LM Studio and the daemon
+are always reachable. The allowlist file lives on the host, mounted read-only
+into the gateway, so the agent can't edit it. Blocked attempts show up in
+`hangar net` and in the agent's **Network** tab, where one click allows them.
+
 
 ## The daemon
 
@@ -276,6 +373,20 @@ uv run hangar accounts add work --provider codex        # ChatGPT Plus/Pro
 uv run hangar accounts add api --provider anthropic-key # or openai-key (asks for the key, hidden)
 uv run hangar accounts list | status <name> | login <name> | remove <name>
 ```
+
+**Harnesses are installed only when you need them.** Claude Code and Codex
+aren't in the agent images (together they're about 1.1 GB). The first time you
+connect an account for one (or create an agent that needs it), Hangar installs
+it once into a shared volume, mounted read-only into the agents that use it.
+Local-model agents need neither.
+
+```bash
+uv run hangar harness list                 # installed versions
+uv run hangar harness update claude        # newest version; running agents keep theirs until restarted
+uv run hangar harness install codex | remove codex
+```
+
+Updating a harness doesn't need a new OS image.
 
 Subscription sign-in runs the vendor's own CLI login (`claude auth login`,
 `codex login --device-auth`) in a throwaway container: open the link it
@@ -378,13 +489,97 @@ Screenshots + pixel clicks stay available for canvases and odd widgets.
 While the user has taken over a desktop, input tools refuse with a "user has
 control" message, so the agent waits instead of fighting for the mouse.
 
+## Installing on the spare desktop
+
+The Hangar machine runs **Hangar OS**: Fedora Kinoite (KDE Plasma,
+image-based: read-only system, atomic updates, one-command rollback) with
+Hangar built in. You boot to a normal desktop with Hangar and Passwords in
+the taskbar. Agents run in rootless Podman, and LM Studio runs headless on
+the host. Everything is built in GitHub Actions, never on your laptop.
+
+### 1. Build it (once, in GitHub)
+
+1. Push this repo to GitHub (it can be private).
+2. **Actions** tab → enable workflows. Two run on every push to `main`:
+   - **agent images**: the agent desktops (base, gateway, research, coding,
+     office) for amd64 and arm64 → `ghcr.io/<you>/hangar-*:latest`
+   - **OS image**: Hangar OS for x86_64 → `ghcr.io/<you>/hangar-os:latest`
+3. In your GitHub profile → **Packages**, set each `hangar-*` package to
+   **Public**. They contain no secrets, and the PC can then download them without
+   a GitHub login.
+4. **Actions → OS image → Run workflow**, tick **Also build the installer ISO**.
+   About 30 minutes later, download `hangar-os-iso` from the run's artifacts.
+
+### 2. Install (on the PC)
+
+1. Write `hangar-os.iso` to a USB stick (Fedora Media Writer, balenaEtcher, or
+   `dd`), boot the PC from it.
+2. The installer asks for the disk (tick **Encrypt my data**: agents' accounts
+   and your vault live on it), your user account and password, language and time zone.
+3. Reboot and log in. **Hangar Setup** opens full screen: network, AI accounts,
+   local models (it installs LM Studio's headless server and recommends models
+   for your GPU/RAM), phone notifications. Meanwhile the agent desktops download
+   in the background (about 3 GB).
+4. Done: Hangar is in the taskbar, and the Spaces key (Meta+S, or Mission Control
+   on an Apple keyboard) shows every agent.
+
+**If the ISO gives you trouble**, there's another route to the same result:
+install **Fedora Kinoite 45** from its official ISO, log in, then
+
+```bash
+sudo bootc switch ghcr.io/<you>/hangar-os:latest
+```
+```bash
+systemctl reboot
+```
+
+### Updating and rolling back
+
+```bash
+sudo bootc upgrade && systemctl reboot     # new OS image from your registry (built by CI)
+sudo bootc rollback && systemctl reboot    # back to the previous OS image
+hangar harness update claude               # harnesses update on their own schedule
+hangar images pull --all                   # newest agent desktops
+```
+
+Updates swap the whole system image atomically. Your home folder, agents,
+accounts, vault and settings live outside it and are untouched.
+
+### On the Hangar OS vs. on your Mac
+
+| | Mac (dev) | Hangar OS |
+|---|---|---|
+| agents | Docker Desktop | rootless Podman (same Docker API) |
+| agent images | built locally (`make images`) | pulled from `ghcr.io/<you>` |
+| daemon | started on demand | systemd user service, from login |
+| LM Studio | the Mac app | headless server, installed by Setup |
+| setup wizard | a window; changes nothing on your Mac | full screen on first login; applies language, keyboard, time zone, Wi-Fi |
+| notifications | ntfy / Slack / Telegram | the same, plus desktop notifications |
+
+### Not yet verified on real hardware
+
+These can only be checked by installing on the PC, so expect a round of fixes:
+- **Agents reaching the daemon and LM Studio** through rootless Podman's
+  `host-gateway` (the daemon listens on all interfaces, with the firewall
+  closing ports above 1024 to the LAN).
+- **The installer asking the questions** (disk, encryption, user), which
+  depends on bootc-image-builder's interactive-module support.
+- **Branding on screen:** the boot splash (needs the initramfs rebuild CI
+  does) and the login screen background.
+- **NVIDIA GPUs:** the image has no NVIDIA driver yet, so LM Studio would run
+  on the CPU there. AMD and Intel GPUs work with the built-in drivers.
+
 ## Repo layout
 
 ```
 hangar/apps/       native Qt apps: spaces.py (+ overview), passwords.py, setup.py (wizard),
                    manage.py (accounts, models, settings), vnc.py (native viewer), common.py
 hangar/hardware.py, catalog.py, hostsetup.py   what the wizard detects, suggests and sets
-os/                OS integration: app launchers, the Spaces-key shortcut
+hangar/snapshots.py, network.py   workspace snapshots; allowlist networks + gateways
+images/flavors/    research, coding, office (add your own)
+images/gateway/    the per-agent egress gateway
+os/                Hangar OS: Containerfile, files layered into it, branding, ISO config
+.github/workflows/ CI: agent images (multi-arch) and the OS image + ISO
 hangar/            Python package: engine.py (containers), cli.py (`hangar`),
                    daemon.py (API + proxies), manage_api.py (UI's API),
                    vault.py + vault_api.py (passwords), prepare.py (checks), jobs.py (sign-ins,
@@ -400,3 +595,6 @@ tests/             smoke tests
 M1 hidden desktop + MCP · M2 `hangar` CLI, many agents · M3 accounts, LM Studio,
 local harness · M4 daemon, reports, notifications · M5 Spaces UI · M6 setup
 wizard · M7 snapshots, allowlists, flavors · M8 bootc OS image + ISO
+
+Next: install on the real PC and fix what it finds; an NVIDIA variant of the
+OS image; the Hangar Browser (an agent-first browser shell) as a stretch goal.

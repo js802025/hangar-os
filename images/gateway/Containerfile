@@ -1,0 +1,9 @@
+# Per-agent egress gateway (see gateway.py). Tiny on purpose: Python stdlib only.
+FROM docker.io/library/debian:trixie-slim
+RUN apt-get update && apt-get install -y --no-install-recommends python3 tini \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --uid 1001 --no-create-home gw && mkdir -p /etc/hangar
+COPY gateway.py /opt/hangar/gateway.py
+USER gw
+EXPOSE 3128 6080 8765
+ENTRYPOINT ["/usr/bin/tini", "--", "python3", "-u", "/opt/hangar/gateway.py"]

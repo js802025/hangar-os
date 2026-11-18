@@ -29,7 +29,7 @@ from hangar import auth, daemonctl, notify
 from hangar import models as lm
 from hangar.accounts import HARNESS, PROVIDERS, Accounts
 from hangar.engine import DAEMON_PORT, Agent, AgentSpec, Engine, image_for
-from hangar.prepare import SetupError, prepare
+from hangar.prepare import HarnessMissing, SetupError, prepare
 
 app = typer.Typer(help="Hangar: run AI agents on their own hidden desktops.", no_args_is_help=True,
                   add_completion=False)
@@ -98,26 +98,36 @@ STATE_STYLE = {"running": "green", "working": "green", "idle": "dim", "done": "c
 @app.command()
 def new(
     name: str,
-    flavor: str = typer.Option("base", help="base | research | coding | office"),
+    flavor: str = typer.Option("base", help="base | research | coding | office (see `hangar flavors`)"),
     model: str = typer.Option("", help="claude[:model] | codex[:model] | local:<lm-studio-model>"),
     account: str = typer.Option("", help="Account for claude/codex (default: the only matching one)"),
     task: str = typer.Option("", help="What the agent should do"),
     share: list[str] = typer.Option([], "--share", help="Host folder to share, read-only (PATH) or writable (PATH:rw); repeatable"),
+    allow: list[str] = typer.Option([], "--allow", help="Only let it reach these domains (repeatable); "
+                                                       "its AI provider is added automatically"),
+    offline: bool = typer.Option(False, "--offline", help="No internet except its AI provider and local models"),
     cpus: float = typer.Option(2.0, help="CPU cap"),
     memory: str = typer.Option("4g", help="Memory cap, e.g. 4g"),
     screen: str = typer.Option("1280x800", help="Desktop size WxH"),
     view: bool = typer.Option(False, "--view", help="Open the live view when ready"),
 ):
     """Create and start an agent."""
-    spec = AgentSpec(name=name, flavor=flavor, model=model, account=account, task=task, shares=share,
+    try:
+        from hangar.network import clean_domain
+        allow_list = [clean_domain(d) for d in allow] if (allow or offline) else None
+    except ValueError as e:
+        con.print(f"[red]{e}[/]")
+        raise typer.Exit(1)
+    spec = AgentSpec(name=name, flavor=flavor, model=model, account=account, task=task, shares=share, allow=allow_list,
                      cpus=cpus, memory=memory, screen=screen)
     configure_model(spec)
     try:
         with con.status(f"Starting {name}…"):
             eng().create(spec)
             a = eng().wait_ready(name)
-    except ImageNotFound:
-        con.print(f"[red]Image {image_for(flavor)} not found.[/] Build it first (`make base`).")
+    except ImageNotFound as e:
+        missing = "the gateway image" if "gateway" in str(e) else f"image {image_for(flavor)}"
+        con.print(f"[red]Can't find {missing}.[/] Build it first (`make images`).")
         raise typer.Exit(1)
     except ValueError as e:
         con.print(f"[red]{e}[/]")
@@ -135,13 +145,92 @@ def new(
 def configure_model(spec: AgentSpec) -> None:
     """Resolve --model/--account/--share, or exit with a helpful message."""
     try:
-        with con.status("Preparing…"):
-            warnings = prepare(eng(), spec)
+        try:
+            with con.status("Preparing…"):
+                warnings = prepare(eng(), spec)
+        except HarnessMissing as e:
+            ensure_harness(e.harness)
+            with con.status("Preparing…"):
+                warnings = prepare(eng(), spec)
     except SetupError as e:
         con.print(f"[red]{e}[/]")
         raise typer.Exit(1)
     for w in warnings:
         con.print(f"[yellow]Warning:[/] {w}")
+
+
+@app.command()
+def net(name: str,
+        allow: list[str] = typer.Option([], "--allow", help="Add a domain (repeatable)"),
+        remove: list[str] = typer.Option([], "--remove", help="Remove a domain (repeatable)"),
+        n: int = typer.Option(15, "-n", help="How many recent connections to show")):
+    """Show or change an agent's network allowlist."""
+    from hangar import network
+    a = agent_or_exit(name)
+    if a.network != "allowlist":
+        con.print(f"{name} has [bold]open[/] internet access. To limit it, create it with --allow/--offline "
+                  "(an allowlist can't be added to a running agent).")
+        return
+    current = network.read_allow(name)
+    if allow or remove:
+        try:
+            drop = {network.clean_domain(d) for d in remove}
+            current = network.write_allow(name, [d for d in current if d not in drop] + list(allow))
+        except ValueError as e:
+            con.print(f"[red]{e}[/]")
+            raise typer.Exit(1)
+        con.print("[green]✓[/] Updated (applies right away).")
+    con.print(f"[bold]{name}[/] may reach: {', '.join(current) or '[dim]nothing but its AI provider and local models[/]'}")
+    events = network.recent(eng().client, name)[:n]
+    if events:
+        t = Table(box=None, header_style="bold dim")
+        for col in ("WHEN", "", "HOST"):
+            t.add_column(col)
+        for e in events:
+            t.add_row(e["ts"][11:19], f"[{'green' if e['action'] == 'ALLOW' else 'red'}]{e['action'].lower()}[/]",
+                      f"{e['host']}:{e['port']}" + (f"  [dim]{e['why']}[/]" if e["why"] else ""))
+        con.print(t)
+        blocked = sorted({e["host"] for e in events if e["action"] == "BLOCK"})
+        if blocked:
+            con.print(f"[dim]Allow one with: hangar net {name} --allow {blocked[0]}[/]")
+
+
+images_app = typer.Typer(help="Agent images (on the Hangar OS they come from a registry).", no_args_is_help=True)
+app.add_typer(images_app, name="images")
+
+
+@images_app.command("pull")
+def images_pull(all_flavors: bool = typer.Option(False, "--all", help="Also every flavor, not just base + gateway"),
+                flavor: list[str] = typer.Option([], "--flavor", help="A flavor to pull (repeatable)")):
+    """Download agent images from the registry in HANGAR_IMAGES (first boot does this)."""
+    from hangar.engine import IMAGES
+    if IMAGES.startswith("localhost/"):
+        con.print("[yellow]HANGAR_IMAGES points at local images (dev mode): build them with `make images`.[/]")
+        raise typer.Exit(1)
+    names = ["base", "gateway", *flavor] + (["research", "coding", "office"] if all_flavors else [])
+    for n in dict.fromkeys(names):
+        ref = image_for(n) if n != "gateway" else IMAGES.format(name="gateway")
+        con.print(f"Pulling [bold]{ref}[/]…")
+        repo, _, tag = ref.rpartition(":")
+        try:
+            eng().client.images.pull(repo, tag=tag or "latest")
+        except Exception as e:   # one missing flavor shouldn't stop the rest
+            con.print(f"[red]  failed:[/] {e}")
+            if n in ("base", "gateway"):
+                raise typer.Exit(1)
+    con.print("[green]✓[/] Agent images ready.")
+
+
+@app.command()
+def flavors():
+    """Agent flavors that are built and ready."""
+    t = Table(box=None, header_style="bold dim")
+    for col in ("FLAVOR", "WHAT'S IN IT", "IMAGE"):
+        t.add_column(col)
+    for f in eng().flavors():
+        t.add_row(f["name"], f["description"], f["image"])
+    con.print(t)
+    con.print("[dim]Build more with `make flavors`; add your own in images/flavors/<name>/ (see README).[/]")
 
 
 @app.command()
@@ -153,11 +242,16 @@ def run(name: str, task: str):
         raise typer.Exit(1)
     ensure_daemon(quiet=True)
     try:
-        eng().run_task(name, task)
+        res = eng().run_task(name, task)
     except RuntimeError as e:
         con.print(f"[red]{e}[/]")
         raise typer.Exit(1)
     con.print(f"[green]{name} is working on:[/] {task}")
+    if res["snapshot"]:
+        con.print(f"[dim]Workspace saved first (snapshot {res['snapshot']['id']}); "
+                  f"undo with: hangar rollback {name}[/]")
+    if res["warning"]:
+        con.print(f"[yellow]{res['warning']}[/]")
 
 
 @app.command("list")
@@ -312,6 +406,60 @@ def logs(
 
 
 @app.command()
+def snapshot(name: str, message: str = typer.Option("", "-m", help="A note to remember it by")):
+    """Save a copy of the agent's workspace now."""
+    from hangar import snapshots
+    agent_or_exit(name)
+    try:
+        info = snapshots.take(eng(), name, message or "manual snapshot")
+    except snapshots.SnapshotError as e:
+        con.print(f"[red]{e}[/]")
+        raise typer.Exit(1)
+    con.print(f"[green]✓[/] Snapshot {info['id']} ({info['bytes'] / 1e6:.1f} MB of workspace).")
+
+
+@app.command()
+def snapshots(name: str):
+    """List an agent's workspace snapshots (one is taken before every task)."""
+    from hangar import snapshots as snaps
+    items = snaps.list_snapshots(name)
+    if not items:
+        con.print(f"No snapshots for {name} yet. One is taken before every `hangar run`.")
+        return
+    t = Table(box=None, header_style="bold dim")
+    for col in ("ID", "WHEN", "SIZE", "NOTE"):
+        t.add_column(col)
+    for s in items:
+        t.add_row(s["id"], time.strftime("%b %d %H:%M", time.localtime(s["time"])), f"{s['bytes'] / 1e6:.1f} MB",
+                  s["label"][:70])
+    con.print(t)
+
+
+@app.command()
+def rollback(name: str, snapshot_id: str = typer.Argument(None, help="Default: the latest"),
+             yes: bool = typer.Option(False, "-y", "--yes")):
+    """Put the agent's workspace back as it was in a snapshot."""
+    from hangar import snapshots as snaps
+    agent_or_exit(name)
+    if eng().runtime(name)["busy"] and not typer.confirm(f"{name} is working on a task. Roll back anyway?"):
+        raise typer.Exit()
+    items = snaps.list_snapshots(name)
+    target = items[0] if items and not snapshot_id else next((s for s in items if s["id"] == snapshot_id), None)
+    if not target:
+        con.print(f"[red]No such snapshot.[/] See `hangar snapshots {name}`.")
+        raise typer.Exit(1)
+    if not yes and not typer.confirm(f"Replace {name}'s workspace with snapshot {target['id']} ({target['label']})?"):
+        raise typer.Exit()
+    try:
+        res = snaps.rollback(eng(), name, target["id"])
+    except snaps.SnapshotError as e:
+        con.print(f"[red]{e}[/]")
+        raise typer.Exit(1)
+    con.print(f"[green]✓[/] Restored {res['restored']['id']}. The workspace you replaced is snapshot "
+              f"{res['undo']['id']} (roll back to it to undo).")
+
+
+@app.command()
 def shell(name: str):
     """Open a shell inside an agent's container."""
     agent_or_exit(name)
@@ -391,7 +539,22 @@ def accounts_add(
         _login(accts, acct)
 
 
+def ensure_harness(name: str) -> None:
+    """Install Claude Code / Codex the first time something needs it."""
+    from hangar import harness
+    if harness.current(eng(), name):
+        return
+    con.print(f"[bold]Installing {harness.HARNESSES[name]['title']}[/] (one time; agents share it)…")
+    try:
+        h = harness.install(eng(), name)
+    except RuntimeError as e:
+        con.print(f"[red]{e}[/]")
+        raise typer.Exit(1)
+    con.print(f"[green]✓[/] {harness.HARNESSES[name]['title']} {h['version']} installed.")
+
+
 def _login(accts: Accounts, acct) -> None:
+    ensure_harness(acct.harness)
     con.print("[dim]Starting the official sign-in in a temporary container. Open the link it shows, "
               "sign in in your browser, and paste back any code it asks for. Hangar never sees "
               "your password.[/]")
@@ -480,6 +643,67 @@ def daemon_stop():
 def daemon_token():
     """Print the admin token (for scripts and `curl -H "Authorization: Bearer …"`)."""
     print(auth.admin_token())
+
+
+# -- harnesses ------------------------------------------------------------------
+
+harness_app = typer.Typer(help="Agent harnesses (Claude Code, Codex CLI), installed when needed.",
+                          no_args_is_help=True)
+app.add_typer(harness_app, name="harness")
+
+
+@harness_app.command("list")
+def harness_list():
+    """Which harnesses are installed (agents share them)."""
+    from hangar import harness
+    have = harness.installed(eng())
+    t = Table(box=None, header_style="bold dim")
+    for col in ("HARNESS", "VERSION", "VOLUME"):
+        t.add_column(col)
+    for name, info in harness.HARNESSES.items():
+        mine = [h for h in have if h["harness"] == name]
+        t.add_row(info["title"], ", ".join(h["version"] for h in mine) or "[dim]not installed[/]",
+                  ", ".join(h["volume"] for h in mine) or "-")
+    con.print(t)
+
+
+@harness_app.command("install")
+def harness_install(name: str = typer.Argument(..., help="claude | codex"), version: str = typer.Option("")):
+    """Install a harness (latest version unless --version)."""
+    from hangar import harness
+    try:
+        h = harness.install(eng(), name, version)
+    except (ValueError, RuntimeError) as e:
+        con.print(f"[red]{e}[/]")
+        raise typer.Exit(1)
+    con.print(f"[green]✓[/] {harness.HARNESSES[name]['title']} {h['version']} installed.")
+
+
+@harness_app.command("update")
+def harness_update(name: str = typer.Argument(..., help="claude | codex")):
+    """Install the newest version. New agents use it; running ones keep theirs until restarted."""
+    from hangar import harness
+    try:
+        cur, latest = harness.current(eng(), name), harness.latest_version(eng(), name)
+    except ValueError as e:
+        con.print(f"[red]{e}[/]")
+        raise typer.Exit(1)
+    if cur and cur["version"] == latest:
+        con.print(f"{harness.HARNESSES[name]['title']} {latest} is already the newest.")
+        return
+    harness_install(name, latest)
+
+
+@harness_app.command("remove")
+def harness_remove(name: str = typer.Argument(..., help="claude | codex")):
+    """Uninstall a harness (only if no agent uses it)."""
+    from hangar import harness
+    try:
+        gone = harness.remove(eng(), name)
+    except (ValueError, RuntimeError) as e:
+        con.print(f"[red]{e}[/]")
+        raise typer.Exit(1)
+    con.print(f"Removed {', '.join(gone) or 'nothing (not installed)'}.")
 
 
 # -- vault ---------------------------------------------------------------------

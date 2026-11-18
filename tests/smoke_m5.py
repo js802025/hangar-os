@@ -90,7 +90,7 @@ def main() -> None:
         # accounts: official sign-in as a job; wait for its link, then cancel
         assert c.post("/api/accounts", json={"name": "m5-sub", "provider": "claude"}).status_code == 200
         job = c.post("/api/accounts/m5-sub/login").json()
-        j = until(lambda: (x := c.get(f"/api/jobs/{job['id']}").json())["urls"] and x, timeout=90,
+        j = until(lambda: (x := c.get(f"/api/jobs/{job['id']}").json())["urls"] and x, timeout=900,
                   what="sign-in link")
         assert any(u.startswith("https://") for u in j["urls"]), j
         print("sign-in job shows the official link:", j["urls"][-1][:60] + "…")

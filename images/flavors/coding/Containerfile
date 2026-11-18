@@ -1,0 +1,12 @@
+# coding: compilers, Python tooling, GitHub CLI, and an accessible editor (Geany).
+ARG BASE=localhost/hangar-base:dev
+FROM ${BASE}
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential python3-dev pkg-config gh neovim sqlite3 shellcheck geany \
+    && rm -rf /var/lib/apt/lists/* \
+    && python3 -m venv /opt/uv && /opt/uv/bin/pip install --no-cache-dir uv \
+    && ln -s /opt/uv/bin/uv /opt/uv/bin/uvx /usr/local/bin/
+USER agent
+LABEL dev.hangar.flavor="coding" \
+      dev.hangar.flavor.description="Software work: compilers, Python + uv, gh, Geany and neovim"

@@ -1,0 +1,18 @@
+# bootc-image-builder settings for the installer ISO (anaconda-iso).
+# The installer asks for the things that are yours to decide: disk (with the
+# "Encrypt my data" option), user account and password, language, time zone.
+# Hangar Setup takes over on first login.
+
+[customizations.installer.kickstart]
+contents = """
+graphical
+"""
+
+[customizations.installer.modules]
+enable = [
+  "org.fedoraproject.Anaconda.Modules.Localization",
+  "org.fedoraproject.Anaconda.Modules.Network",
+  "org.fedoraproject.Anaconda.Modules.Timezone",
+  "org.fedoraproject.Anaconda.Modules.Users",
+  "org.fedoraproject.Anaconda.Modules.Storage",
+]

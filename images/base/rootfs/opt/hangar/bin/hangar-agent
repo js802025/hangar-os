@@ -36,6 +36,11 @@ hangar-report working "Started: ${TASK:0:200}"
 
 KEYFILE=/hangar/account/api_key
 sub="${MODEL#*:}"; [[ "$sub" == "$MODEL" ]] && sub=""
+h="${MODEL%%:*}"
+if [[ "$h" == claude || "$h" == codex ]] && ! command -v "$h" >/dev/null; then
+  hangar-report error "The $h harness isn't installed in this agent. Run: hangar harness install $h, then recreate the agent."
+  exit 1
+fi
 
 case "$MODEL" in
   claude|claude:*)

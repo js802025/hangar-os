@@ -21,10 +21,10 @@ from hangar import auth, jobs, notify
 from hangar import models as lm
 from hangar.accounts import HARNESS, LOGIN_CMD, PROVIDERS, Accounts
 from hangar.engine import DAEMON_PORT, AgentSpec, Engine
-from hangar.prepare import SetupError, prepare
+from hangar import harness
+from hangar.prepare import HarnessMissing, SetupError, prepare
 
 SETTINGS = auth.CONFIG_DIR / "settings.json"
-FLAVORS = ["base", "research", "coding", "office"]   # real images arrive in M7
 
 
 def err(msg: str, code: int = 400) -> JSONResponse:
@@ -59,21 +59,47 @@ def lan_ips() -> list[str]:
 def routes(eng: Engine) -> list[Route]:
     accts = Accounts(eng)
 
+    def harness_job(name: str, then: list[str] | None = None) -> "jobs.Job":
+        """One install job per harness at a time; `then` runs after it (e.g. a sign-in)."""
+        for j in jobs.jobs.values():
+            if j.kind == f"harness:{name}" and not j.done and not then:
+                return j
+        vol, argv = harness.prepare_install(eng, name)
+        title = harness.HARNESSES[name]["title"]
+        if then:
+            import shlex
+            argv = ["bash", "-c", f"{shlex.join(argv)} && {shlex.join(then)}"]
+            return jobs.Job(f"Install {title}, then sign in", argv, kind="login")
+        return jobs.Job(f"Install {title}", argv, kind=f"harness:{name}")
+
     # -- agents ------------------------------------------------------------------
     async def create_agent(request: Request):
         b = await body(request)
         spec = AgentSpec(name=str(b.get("name", "")).strip(), flavor=b.get("flavor") or "base",
                          model=b.get("model") or "", account=b.get("account") or "",
                          task=b.get("task") or "", shares=[str(s) for s in b.get("shares") or [] if s])
-        if spec.flavor not in FLAVORS:
-            return err(f"unknown flavor {spec.flavor}")
+        if b.get("allow") is not None:
+            from hangar.network import clean_domain
+            try:
+                spec.allow = [clean_domain(d) for d in b["allow"] if str(d).strip()]
+            except ValueError as e:
+                return err(str(e))
+        flavors = {f["name"] for f in await run_in_threadpool(eng.flavors)}
+        if spec.flavor not in flavors:
+            return err(f"flavor '{spec.flavor}' isn't built. Build it with: make flavor F={spec.flavor}")
         try:
             warnings = await run_in_threadpool(prepare, eng, spec)
             await run_in_threadpool(eng.create, spec)
+        except HarnessMissing as e:
+            job = await run_in_threadpool(harness_job, e.harness)
+            title = harness.HARNESSES[e.harness]["title"]
+            return JSONResponse({"error": f"{title} is being installed (one time, a few minutes). "
+                                          "Try again when it's done.", "job": job.to_dict()}, status_code=409)
         except (SetupError, ValueError, RuntimeError) as e:
             return err(str(e))
         except ImageNotFound:
-            return err(f"The image for flavor '{spec.flavor}' isn't built yet.")
+            return err(f"The agent desktop for '{spec.flavor}' isn't downloaded yet. It downloads on first boot "
+                       f"(or run: hangar images pull --flavor {spec.flavor}).")
         except APIError as e:
             return err(e.explanation or str(e))
         return JSONResponse({"ok": True, "name": spec.name, "warnings": warnings})
@@ -98,7 +124,7 @@ def routes(eng: Engine) -> list[Route]:
                     models = [m.__dict__ for m in studio.list()]
                 except RuntimeError:
                     pass
-            return {"flavors": FLAVORS,
+            return {"flavors": [f["name"] for f in eng.flavors()], "flavor_info": eng.flavors(),
                     "accounts": [{"name": a.name, "provider": a.provider, "harness": a.harness}
                                  for a in accts.list()],
                     "local_models": models, "lmstudio": studio.installed}
@@ -139,6 +165,8 @@ def routes(eng: Engine) -> list[Route]:
             await run_in_threadpool(accts.set_api_key, a, key)
         except KeyError as e:
             return err(str(e).strip("'"), 404)
+        if not await run_in_threadpool(harness.current, eng, a.harness):
+            await run_in_threadpool(harness_job, a.harness)   # in the background, ready for its agents
         return JSONResponse({"ok": True})
 
     async def login(request: Request):
@@ -149,7 +177,13 @@ def routes(eng: Engine) -> list[Route]:
             return err(str(e).strip("'"), 404)
         if a.provider not in LOGIN_CMD:
             return err("API-key accounts don't sign in")
-        job = jobs.Job(f"Sign in: {a.name}", accts.login_argv(a), kind="login")
+        if await run_in_threadpool(harness.current, eng, a.harness):
+            job = jobs.Job(f"Sign in: {a.name}", accts.login_argv(a), kind="login")
+        else:   # first account for this harness: install it, then sign in, in one window
+            def chain():
+                vol, _ = harness.prepare_install(eng, a.harness)
+                return harness_job(a.harness, then=accts.login_argv(a, harness_volume=vol))
+            job = await run_in_threadpool(chain)
         return JSONResponse(job.to_dict())
 
     async def account_status(request: Request):
@@ -285,6 +319,49 @@ def routes(eng: Engine) -> list[Route]:
         threading.Timer(0.5, later).start()
         return JSONResponse({"ok": True})
 
+    # -- harnesses --------------------------------------------------------------------------
+    async def list_harness(_: Request):
+        have = await run_in_threadpool(harness.installed, eng)
+        return JSONResponse([{"name": n, "title": h["title"],
+                              "versions": [x["version"] for x in have if x["harness"] == n]}
+                             for n, h in harness.HARNESSES.items()])
+
+    async def install_harness(request: Request):
+        name = request.path_params["name"]
+        if name not in harness.HARNESSES:
+            return err("unknown harness", 404)
+        return JSONResponse((await run_in_threadpool(harness_job, name)).to_dict())
+
+    # -- network allowlists ---------------------------------------------------------------
+    async def get_network(request: Request):
+        from hangar import network
+        name = request.path_params["name"]
+        try:
+            a = await run_in_threadpool(eng.get, name)
+        except NotFound:
+            return err(f"no agent named '{name}'", 404)
+        if a.network != "allowlist":
+            return JSONResponse({"mode": "open"})
+        return JSONResponse({"mode": "allowlist", "allow": network.read_allow(name),
+                             "implied": network.implied(a.model),
+                             "recent": await run_in_threadpool(network.recent, eng.client, name)})
+
+    async def set_network(request: Request):
+        from hangar import network
+        name = request.path_params["name"]
+        try:
+            a = await run_in_threadpool(eng.get, name)
+        except NotFound:
+            return err(f"no agent named '{name}'", 404)
+        if a.network != "allowlist":
+            return err("this agent has open internet access; create it with an allowlist to limit it")
+        b = await body(request)
+        try:
+            allow = network.write_allow(name, [str(d) for d in b.get("allow") or []])
+        except ValueError as e:
+            return err(str(e))
+        return JSONResponse({"ok": True, "allow": allow})
+
     # -- setup wizard --------------------------------------------------------------------
     async def setup_state(_: Request):
         """Everything the setup wizard shows: hardware, model picks, system settings."""
@@ -327,6 +404,14 @@ def routes(eng: Engine) -> list[Route]:
             return err(str(e))
         return JSONResponse({"ok": True})
 
+    async def setup_lmstudio(_: Request):
+        from hangar import hostsetup
+        try:
+            argv = hostsetup.lmstudio_install_argv()
+        except RuntimeError as e:
+            return err(str(e))
+        return JSONResponse(jobs.Job("Install LM Studio", argv, kind="download").to_dict())
+
     async def setup_done(request: Request):
         b = await body(request)
         st = load_settings()
@@ -336,11 +421,16 @@ def routes(eng: Engine) -> list[Route]:
 
     A = "/api/accounts/{name}"
     return [
+        Route("/api/harness", list_harness),
+        Route("/api/harness/{name}/install", install_harness, methods=["POST"]),
+        Route("/api/agents/{name}/network", get_network),
+        Route("/api/agents/{name}/network", set_network, methods=["PUT"]),
         Route("/api/setup", setup_state),
         Route("/api/setup/host", setup_host, methods=["POST"]),
         Route("/api/setup/network", setup_network),
         Route("/api/setup/wifi", setup_wifi, methods=["POST"]),
         Route("/api/setup/done", setup_done, methods=["POST"]),
+        Route("/api/setup/lmstudio", setup_lmstudio, methods=["POST"]),
         Route("/api/agents", create_agent, methods=["POST"]),
         Route("/api/agents/{name}", delete_agent, methods=["DELETE"]),
         Route("/api/options", options),

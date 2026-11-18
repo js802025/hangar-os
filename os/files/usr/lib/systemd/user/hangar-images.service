@@ -1,0 +1,13 @@
+[Unit]
+Description=Download Hangar's agent images (first boot, then keeps them current)
+Wants=podman.socket network-online.target
+After=podman.socket network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/hangar images pull
+Restart=on-failure
+RestartSec=60
+
+[Install]
+WantedBy=default.target

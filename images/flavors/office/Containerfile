@@ -1,0 +1,13 @@
+# office: LibreOffice (using its GTK3 front end, so agents can read it through
+# the accessibility tree with app_snapshot) and document-compatible fonts.
+ARG BASE=localhost/hangar-base:dev
+FROM ${BASE}
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libreoffice-writer libreoffice-calc libreoffice-impress libreoffice-gtk3 \
+        fonts-liberation fonts-crosextra-carlito fonts-crosextra-caladea evince \
+    && rm -rf /var/lib/apt/lists/*
+USER agent
+ENV SAL_USE_VCLPLUGIN=gtk3
+LABEL dev.hangar.flavor="office" \
+      dev.hangar.flavor.description="Documents: LibreOffice Writer, Calc and Impress, PDF viewer"

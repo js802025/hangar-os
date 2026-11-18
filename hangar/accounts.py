@@ -119,7 +119,7 @@ class Accounts:
         env = {"HANGAR_ACCOUNT": acct.name, "HANGAR_ACCOUNT_PROVIDER": acct.provider, **ENV[acct.provider]}
         return vols, env
 
-    def login_argv(self, acct: Account) -> list[str]:
+    def login_argv(self, acct: Account, harness_volume: str = "") -> list[str]:
         """argv for an interactive, throwaway login container (needs a real TTY,
         so it goes through the docker/podman CLI rather than the API)."""
         if acct.provider not in LOGIN_CMD:
@@ -127,9 +127,13 @@ class Accounts:
         cli = shutil.which("podman") or shutil.which("docker")
         if not cli:
             raise RuntimeError("needs the docker or podman CLI on PATH")
+        from hangar import harness
         env = sum((["-e", f"{k}={v}"] for k, v in ENV[acct.provider].items()), [])
+        mounts = ({harness_volume: {"bind": harness.MOUNT.format(acct.harness)}} if harness_volume
+                  else harness.mount(self.engine, acct.harness))
+        hv = sum((["-v", f"{vol}:{m['bind']}:ro"] for vol, m in mounts.items()), [])
         return [cli, "run", "--rm", "-it", "--name", f"hangar-login-{acct.name}-{int(time.time())}",
-                "-v", f"{acct.volume}:{MOUNT}", *env, "--entrypoint", "", BASE_IMAGE,
+                "-v", f"{acct.volume}:{MOUNT}", *hv, *env, "--entrypoint", "", BASE_IMAGE,
                 *LOGIN_CMD[acct.provider]]
 
     def set_api_key(self, acct: Account, key: str) -> None:
@@ -152,8 +156,14 @@ class Accounts:
 
     def status(self, acct: Account) -> str:
         """Ask the vendor CLI whether this account is signed in."""
+        from hangar import harness
+        vols = {acct.volume: {"bind": MOUNT, "mode": "ro"}}
+        if acct.provider in LOGIN_CMD:
+            try:
+                vols.update(harness.mount(self.engine, acct.harness))
+            except harness.NotInstalled as e:
+                return str(e)
         out = self.client.containers.run(
             BASE_IMAGE, command=STATUS_CMD[acct.provider], entrypoint=[], remove=True,
-            volumes={acct.volume: {"bind": MOUNT, "mode": "ro"}}, environment=ENV[acct.provider],
-            stdout=True, stderr=True)
+            volumes=vols, environment=ENV[acct.provider], stdout=True, stderr=True)
         return out.decode(errors="replace").strip()

@@ -1,0 +1,80 @@
+# The Hangar OS image (x86_64), and on request an installer ISO.
+#   - every push to main that touches the OS or Hangar: build + push hangar-os:latest
+#   - Actions tab → "OS image" → Run workflow with "iso" ticked: also build the ISO
+name: OS image
+
+on:
+  push:
+    branches: [main]
+    paths: ["os/**", "hangar/**", "pyproject.toml", "uv.lock", ".github/workflows/os.yml"]
+  workflow_dispatch:
+    inputs:
+      iso:
+        description: "Also build the installer ISO"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    outputs:
+      ref: ${{ steps.vars.outputs.ref }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Free disk space (the base image is ~12 GB)
+        uses: jlumbroso/free-disk-space@v1.3.1
+        with:
+          tool-cache: true
+      - id: vars
+        run: |
+          reg="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}"
+          echo "REG=$reg" >> "$GITHUB_ENV"
+          echo "ref=$reg/hangar-os:latest" >> "$GITHUB_OUTPUT"
+      - name: Build
+        run: |
+          sudo podman build -f os/Containerfile \
+            --build-arg HANGAR_IMAGES="$REG/hangar-{name}:latest" \
+            -t "$REG/hangar-os:latest" .
+      - name: Push
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | sudo podman login ghcr.io -u "${{ github.actor }}" --password-stdin
+          sudo podman push "$REG/hangar-os:latest"
+
+  iso:
+    needs: image
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.iso }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jlumbroso/free-disk-space@v1.3.1
+        with:
+          tool-cache: true
+      - name: Pull the OS image
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | sudo podman login ghcr.io -u "${{ github.actor }}" --password-stdin
+          sudo podman pull "${{ needs.image.outputs.ref }}"
+      - name: Build the ISO (bootc-image-builder)
+        run: |
+          mkdir -p output
+          sudo podman run --rm --privileged --pull=newer \
+            --security-opt label=type:unconfined_t \
+            -v ./os/iso/config.toml:/config.toml:ro \
+            -v ./output:/output \
+            -v /var/lib/containers/storage:/var/lib/containers/storage \
+            quay.io/centos-bootc/bootc-image-builder:latest \
+            --type anaconda-iso --rootfs btrfs --use-librepo=True \
+            "${{ needs.image.outputs.ref }}"
+          sudo find output -name '*.iso' -exec mv {} hangar-os.iso \;
+          sudo chown "$USER" hangar-os.iso && ls -lh hangar-os.iso
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hangar-os-iso
+          path: hangar-os.iso
+          compression-level: 0
+          retention-days: 14

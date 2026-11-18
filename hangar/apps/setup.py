@@ -237,8 +237,15 @@ class Models(Step):
                 w.deleteLater()
         self.checks.clear()
         if not s["lmstudio"]:
-            self.list.addWidget(label("LM Studio isn't installed yet. On the Hangar OS setup installs it for you; "
-                                      "on a Mac, get it from lmstudio.ai, open it once, then come back.", "dim", wrap=True))
+            if s["host"]["dev"]:
+                self.list.addWidget(label("LM Studio isn't installed. On a Mac, get it from lmstudio.ai, open it "
+                                          "once, then come back to this step.", "dim", wrap=True))
+            else:
+                self.list.addWidget(label("Local models run in LM Studio. Install its background server "
+                                          "(about 500 MB), then pick models.", wrap=True))
+                self.list.addWidget(button("Install LM Studio", "primary", lambda: bg(
+                    lambda: common.api.post("/api/setup/lmstudio"),
+                    lambda j: JobDialog(self, j, lambda _j: self.wiz.reload(then=self.enter)).show())))
             self.go.hide()
             return
         self.go.show()

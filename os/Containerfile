@@ -1,0 +1,53 @@
+# Hangar OS: Fedora Kinoite (KDE Plasma, image-based) + Hangar.
+# Built in CI (.github/workflows/os.yml) for x86_64, not on a laptop:
+#   podman build -f os/Containerfile --build-arg HANGAR_IMAGES=ghcr.io/<you>/hangar-{name}:latest .
+# Then: an ISO with bootc-image-builder (os/iso/), or `bootc switch` an
+# installed Kinoite (see README, "Installing on the spare desktop").
+ARG FEDORA=45
+FROM quay.io/fedora-ostree-desktops/kinoite:${FEDORA}
+
+# Where agent images are pulled from (the Hangar daemon reads it).
+ARG HANGAR_IMAGES=ghcr.io/hangar-os/hangar-{name}:latest
+
+# Hangar itself (CLI, daemon, native apps) with its own pinned Python, so a
+# system Python upgrade can never break it.
+COPY pyproject.toml uv.lock README.md /tmp/hangar-src/
+COPY hangar /tmp/hangar-src/hangar
+# (/root points into /var, which doesn't exist at build time, so caches go to /tmp.)
+ENV UV_CACHE_DIR=/tmp/uv-cache \
+    UV_PYTHON_DOWNLOADS=automatic
+RUN dnf -y install uv && \
+    UV_PYTHON_INSTALL_DIR=/usr/lib/hangar/python uv venv --python 3.13 /usr/lib/hangar/venv && \
+    VIRTUAL_ENV=/usr/lib/hangar/venv uv pip install --no-cache "/tmp/hangar-src[apps]" && \
+    ln -s /usr/lib/hangar/venv/bin/hangar /usr/lib/hangar/venv/bin/hangar-app /usr/bin/ && \
+    rm -rf /tmp/hangar-src /tmp/uv-cache && dnf clean all
+
+# Desktop integration: launchers, icons, first-login setup, the Spaces key,
+# taskbar pins, user services, wallpaper, boot splash.
+COPY os/files/ /
+RUN sed -i "s|@HANGAR_IMAGES@|${HANGAR_IMAGES}|" /usr/lib/environment.d/60-hangar.conf && \
+    systemctl --global enable podman.socket hangar-daemon.service hangar-images.service && \
+    for f in /usr/share/plasma/look-and-feel/org.fedoraproject.fedora*/contents/defaults; do \
+        sed -i 's/^Image=.*/Image=Hangar/' "$f"; done && \
+    gtk-update-icon-cache -f /usr/share/icons/hicolor || true
+
+# Firewall: Fedora's desktop zone opens ports 1025-65535 to the LAN. Close
+# them, so the daemon (7700) and LM Studio (1234) are reachable only from this
+# machine and its agents. KDE Connect keeps its ports.
+RUN firewall-offline-cmd --zone=FedoraWorkstation --remove-port=1025-65535/tcp && \
+    firewall-offline-cmd --zone=FedoraWorkstation --remove-port=1025-65535/udp && \
+    firewall-offline-cmd --zone=FedoraWorkstation --add-service=kdeconnect || true
+
+# Branding: name, boot splash (the initramfs carries the splash, so rebuild it).
+RUN sed -i -e 's/^NAME=.*/NAME="Hangar OS"/' \
+           -e "s/^PRETTY_NAME=.*/PRETTY_NAME=\"Hangar OS (Fedora ${FEDORA}, KDE)\"/" \
+           -e 's/^VARIANT=.*/VARIANT="Hangar"/' /usr/lib/os-release && \
+    rpm -q plymouth-plugin-two-step plymouth-theme-spinner >/dev/null || \
+        dnf -y install plymouth-plugin-two-step plymouth-theme-spinner && \
+    cp -n /usr/share/plymouth/themes/spinner/*.png /usr/share/plymouth/themes/hangar/ && \
+    plymouth-set-default-theme hangar && \
+    KVER=$(ls /usr/lib/modules | head -1) && \
+    DRACUT_NO_XATTR=1 dracut --force --no-hostonly --reproducible --kver "$KVER" "/usr/lib/modules/$KVER/initramfs.img" && \
+    dnf clean all
+
+RUN bootc container lint

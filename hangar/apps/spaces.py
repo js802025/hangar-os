@@ -183,7 +183,32 @@ class AgentPage(QWidget):
         tabs = QTabWidget()
         tabs.addTab(self.reports, "Reports")
         tabs.addTab(self.logs, "Logs")
+        self.history = QWidget()
+        self.history_list = vbox(spacing=6)
+        hist_body = QWidget()
+        hist_body.setObjectName("scrollbody")
+        hist_body.setLayout(vbox(self.history_list, "stretch"))
+        hist_scroll = QScrollArea()
+        hist_scroll.setWidgetResizable(True)
+        hist_scroll.setWidget(hist_body)
+        self.history.setLayout(vbox(
+            label("A copy of the workspace is saved before every task. Restoring one keeps a copy of the "
+                  "current workspace too, so you can undo it.", "dim", wrap=True),
+            hbox(button("Save snapshot now", on=self.save_snapshot), "stretch"), hist_scroll, spacing=8,
+            margins=(4, 8, 4, 4)))
+        tabs.addTab(self.history, "History")
+        self.netbox = vbox(spacing=8)
+        net_body = QWidget()
+        net_body.setObjectName("scrollbody")
+        net_body.setLayout(vbox(self.netbox, "stretch", margins=(4, 8, 4, 4)))
+        net_scroll = QScrollArea()
+        net_scroll.setWidgetResizable(True)
+        net_scroll.setWidget(net_body)
+        tabs.addTab(net_scroll, "Network")
+        self.net_tab = net_scroll
         tabs.addTab(self.about, "About")
+        tabs.currentChanged.connect(lambda i: (tabs.widget(i) is self.history and self.load_history(),
+                                               tabs.widget(i) is self.net_tab and self.load_network()))
         tabs.setFixedWidth(360)
         self.tabs = tabs
         left = vbox(self.banner, self.view, self.taskbar, spacing=10)
@@ -256,12 +281,90 @@ class AgentPage(QWidget):
     def release(self) -> None:
         self.act("release")
 
+    def load_history(self) -> None:
+        def got(snaps) -> None:
+            while self.history_list.count():
+                w = self.history_list.takeAt(0).widget()
+                if w:
+                    w.deleteLater()
+            if not snaps:
+                self.history_list.addWidget(label("No snapshots yet.", "dim"))
+            for sn in snaps:
+                when = datetime.fromtimestamp(sn["time"]).strftime("%b %d %H:%M")
+                row = QFrame()
+                row.setObjectName("panel")
+                row.setLayout(hbox(vbox(label(f"<b>{when}</b> · {sn['bytes'] / 1e6:.1f} MB"),
+                                        label(sn["label"], "dim", wrap=True), spacing=1), "stretch",
+                                   button("Restore", on=lambda _=False, sn=sn: self.restore(sn)),
+                                   margins=(10, 8, 10, 8)))
+                self.history_list.addWidget(row)
+        bg(lambda: common.api.get(f"/api/agents/{self.name}/snapshots"), got)
+
+    def load_network(self) -> None:
+        def got(n) -> None:
+            while self.netbox.count():
+                it = self.netbox.takeAt(0)
+                w = it.widget() or (it.layout() and None)
+                if w:
+                    w.deleteLater()
+            if n["mode"] == "open":
+                self.netbox.addWidget(label("This agent has open internet access. To limit it to certain sites, "
+                                            "create an agent with “Only these sites”.", "dim", wrap=True))
+                return
+            self.netbox.addWidget(label("<b>Allowed sites</b> (subdomains included). Changes apply right away.",
+                                        wrap=True))
+            for d in n["allow"]:
+                row = QWidget()
+                row.setLayout(hbox(label(d), "stretch", button("Remove", "ghost",
+                                                                lambda _=False, d=d: self.set_allow(n, remove=d))))
+                self.netbox.addWidget(row)
+            if n["implied"]:
+                self.netbox.addWidget(label("Added for its AI provider: " + ", ".join(n["implied"]), "dim", wrap=True))
+            add = QLineEdit()
+            add.setPlaceholderText("Add a site, e.g. github.com")
+            add.returnPressed.connect(lambda: add.text().strip() and self.set_allow(n, add=add.text().strip()))
+            row = QWidget()
+            row.setLayout(hbox(add, button("Allow", on=lambda: add.text().strip() and
+                                           self.set_allow(n, add=add.text().strip()))))
+            self.netbox.addWidget(row)
+            self.netbox.addWidget(label("<b>Recent connections</b>", wrap=True))
+            for e in n["recent"][:25]:
+                color = C["green"] if e["action"] == "ALLOW" else C["red"]
+                row = QWidget()
+                row.setLayout(hbox(label(f"<span style='color:{color}'>●</span> {e['host']}"), "stretch",
+                                   button("Allow", "ghost", lambda _=False, h=e["host"]: self.set_allow(n, add=h))
+                                   if e["action"] == "BLOCK" else None))
+                self.netbox.addWidget(row)
+            if not n["recent"]:
+                self.netbox.addWidget(label("Nothing yet.", "dim"))
+        bg(lambda: common.api.get(f"/api/agents/{self.name}/network"), got)
+
+    def set_allow(self, n: dict, add: str = "", remove: str = "") -> None:
+        allow = [d for d in n["allow"] if d != remove] + ([add] if add else [])
+        bg(lambda: common.api.put(f"/api/agents/{self.name}/network", {"allow": allow}),
+           lambda _: (self.win.toast(f"Allowed {add}" if add else f"Removed {remove}"), self.load_network()))
+
+    def save_snapshot(self) -> None:
+        bg(lambda: common.api.post(f"/api/agents/{self.name}/snapshot", {"label": "saved from Hangar"}),
+           lambda _: (self.win.toast("Snapshot saved"), self.load_history()))
+
+    def restore(self, sn: dict) -> None:
+        if QMessageBox.question(self, "Restore workspace",
+                                f"Replace {self.name}'s workspace with the copy from "
+                                f"{datetime.fromtimestamp(sn['time']).strftime('%b %d %H:%M')}?\n\n"
+                                "The current workspace is saved first, so you can undo this.") != QMessageBox.Yes:
+            return
+        bg(lambda: common.api.post(f"/api/agents/{self.name}/rollback", {"id": sn["id"]}),
+           lambda _: (self.win.toast("Workspace restored"), self.load_history()))
+
     def run_task(self) -> None:
         task = self.task.text().strip()
         if not task:
             return
         bg(lambda: common.api.post(f"/api/agents/{self.name}/run", {"task": task}),
-           lambda _: (self.task.clear(), self.win.toast("Task started", task), self.win.refresh()))
+           lambda r: (self.task.clear(), self.win.toast("Task started", r.get("warning") or
+                                                         "The workspace was saved first (see History)."),
+                      self.win.refresh()))
 
     def delete(self) -> None:
         if QMessageBox.question(self, "Delete agent", f"Delete {self.name} and its files? This can't be undone.") \
@@ -284,7 +387,8 @@ class NewAgentDialog(QDialog):
         self.name = QLineEdit()
         self.name.setPlaceholderText("scout")
         self.flavor = QComboBox()
-        self.flavor.addItems(opts["flavors"])
+        for f in opts.get("flavor_info") or [{"name": n, "description": ""} for n in opts["flavors"]]:
+            self.flavor.addItem(f"{f['name']} · {f['description']}" if f["description"] else f["name"], f["name"])
         self.model = QComboBox()
         self.model.addItem("No model (just a desktop)", ("", ""))
         for a in opts["accounts"]:
@@ -300,6 +404,13 @@ class NewAgentDialog(QDialog):
         self.task.setFixedHeight(80)
         self.task.setPlainText(task)
         self.shares = QVBoxLayout()
+        self.net = QComboBox()
+        self.net.addItem("Open internet", "open")
+        self.net.addItem("Only these sites…", "allow")
+        self.sites = QLineEdit()
+        self.sites.setPlaceholderText("github.com, wikipedia.org (its AI provider is added automatically)")
+        self.sites.setVisible(False)
+        self.net.currentIndexChanged.connect(lambda _i: self.sites.setVisible(self.net.currentData() == "allow"))
         self.err = label("", wrap=True)
         self.err.setStyleSheet(f"color:{C['red']}")
         self.go = button("Launch", "primary", self.submit)
@@ -312,7 +423,9 @@ class NewAgentDialog(QDialog):
             vbox(label("Task", "dim"), self.task, spacing=4),
             hbox(label("Shared folders (read-only unless writable)", "dim"), "stretch",
                  button("Add folder…", "ghost", self.add_share)),
-            self.shares, self.err,
+            self.shares,
+            vbox(label("Internet", "dim"), self.net, self.sites, spacing=4),
+            self.err,
             hbox("stretch", button("Cancel", on=self.reject), self.go),
             spacing=12, margins=(22, 22, 22, 22))
         self.setLayout(form)
@@ -337,8 +450,10 @@ class NewAgentDialog(QDialog):
             w = self.shares.itemAt(i).widget()
             if w is not None and hasattr(w, "path"):
                 shares.append(w.path + (":rw" if w.rw.isChecked() else ""))
-        body = {"name": self.name.text().strip().lower(), "flavor": self.flavor.currentText(), "model": model,
+        body = {"name": self.name.text().strip().lower(), "flavor": self.flavor.currentData(), "model": model,
                 "account": account, "task": self.task.toPlainText().strip(), "shares": shares}
+        if self.net.currentData() == "allow":
+            body["allow"] = [d.strip() for d in self.sites.text().replace(" ", ",").split(",") if d.strip()]
         self.go.setEnabled(False)
         self.go.setText("Loading model…" if model.startswith("local:") else "Launching…")
         self.err.setText("")

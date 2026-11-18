@@ -45,10 +45,23 @@ def title_for(agent: str, status: str) -> str:
     return f"{agent} {TITLES.get(status, status)}"
 
 
+def desktop(title: str, message: str, status: str) -> None:
+    """A notification on this computer's own desktop (the Hangar OS), via notify-send."""
+    import shutil
+    import subprocess
+    import sys
+    if sys.platform != "linux" or not shutil.which("notify-send"):
+        return
+    urgency = "critical" if status in ("error", "waiting_on_user") else "normal"
+    subprocess.Popen(["notify-send", "--app-name=Hangar", "--icon=dev.hangar.spaces", f"--urgency={urgency}",
+                      title, message[:500]], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
 def send(title: str, message: str, status: str = "done", cfg: dict | None = None) -> dict[str, str]:
     """Send to every configured channel. Returns {channel: "ok" | error}."""
     cfg = load() if cfg is None else cfg
     results: dict[str, str] = {}
+    desktop(title, message, status)
     with httpx.Client(timeout=10) as http:
         for name, c in cfg.items():
             try:

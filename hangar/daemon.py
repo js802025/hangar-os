@@ -265,11 +265,11 @@ def action(fn):
             return not_found(name)
         try:
             body = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
-            await run_in_threadpool(fn, name, body)
+            res = await run_in_threadpool(fn, name, body)
         except (RuntimeError, ValueError) as e:
             return JSONResponse({"error": str(e)}, status_code=409)
         hub.publish({"type": "agent", "agent": name, "action": fn.__name__})
-        return JSONResponse({"ok": True})
+        return JSONResponse({"ok": True, **(res if isinstance(res, dict) else {})})
     return endpoint
 
 
@@ -284,7 +284,23 @@ def release(name, _):
 def run(name, body):
     if not body.get("task"):
         raise ValueError("missing task")
-    eng.run_task(name, body["task"])
+    return eng.run_task(name, body["task"])
+
+
+def snapshot(name, body):
+    from hangar import snapshots
+    try:
+        return snapshots.take(eng, name, body.get("label") or "manual snapshot")
+    except snapshots.SnapshotError as e:
+        raise ValueError(str(e))
+
+
+def rollback(name, body):
+    from hangar import snapshots
+    try:
+        return snapshots.rollback(eng, name, body.get("id"))
+    except snapshots.SnapshotError as e:
+        raise ValueError(str(e))
 
 
 def stop(name, _):
@@ -293,6 +309,11 @@ def stop(name, _):
 
 def start(name, _):
     eng.start(name)
+
+
+async def list_snaps(request: Request) -> JSONResponse:
+    from hangar import snapshots
+    return JSONResponse(snapshots.list_snapshots(request.path_params["name"]))
 
 
 async def events(request: Request) -> StreamingResponse:
@@ -467,7 +488,9 @@ web = Starlette(routes=[
     Route(f"{A}/logs", logs),
     Route(f"{A}/reports", get_reports, methods=["GET"]),
     Route(f"{A}/reports", post_report, methods=["POST"]),
-    *(Route(f"{A}/{fn.__name__}", action(fn), methods=["POST"]) for fn in (takeover, release, run, stop, start)),
+    *(Route(f"{A}/{fn.__name__}", action(fn), methods=["POST"])
+      for fn in (takeover, release, run, stop, start, snapshot, rollback)),
+    Route(f"{A}/snapshots", list_snaps),
     Route("/api/events", events),
     Route("/agents/{name}/view", view),
     WebSocketRoute("/agents/{name}/vnc/websockify", vnc_ws),
