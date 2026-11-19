@@ -1,8 +1,16 @@
-"""Capture the frames for the Hangar walkthrough video.
+"""Capture the frames for the Hangar demo video: one real-ish task, start to finish.
 
-Runs a throwaway demo (its own state dir and daemon port), starts real agents
-that browse and type, and records Hangar's windows offscreen while they work.
-Nothing from your own screen is captured. Output: out/video/<scene>/NNNN.png
+The story: you're reading a guide to buying a used road bike, press the Ask
+shortcut and ask Hangar to find one under $500 near Boston, shortlist three
+and message the best seller. The pilot starts a crew (a researcher browsing
+listings, another reading reviews of the likely picks), other jobs keep running, a
+sign-in waits for your OK, you step in for a moment, review what changed,
+and get one answer with the shortlist in your notes.
+
+Runs a throwaway demo (its own state dir, notes folder and daemon port) with
+real agent containers driven over MCP, and records Hangar's windows offscreen.
+Nothing from your own screen is captured. Demo websites are local
+(video/site/). Output: out/video/<scene>/NNNN.png
 
   QT_QPA_PLATFORM=offscreen uv run --extra apps python video/capture.py
 """
@@ -32,13 +40,45 @@ from hangar import auth, pilot, spaces, vault  # noqa: E402
 from hangar.engine import AgentSpec, Engine  # noqa: E402
 
 eng = Engine()
-SPACES = ["research", "studio", "inbox", "coder"]
+SPACES = ["bikes", "inbox", "coder", "trip", "expenses"]
+FLAVOR = {"expenses": "office"}
 SITE = "http://hangar-host:7811"
-TASKS = {"research": ("research", "Compare the surviving airship hangars and their floor areas"),
-         "inbox": ("inbox", "Sort today's newsletters and summarise the three worth reading"),
-         "studio": ("studio", "Research airship hangars for the one-page brief"),
-         "studio/wren": ("wren", "Write the brief as the research comes in"),
-         "coder": ("coder", "Review PR #12 and check why the integration tests are pending")}
+DAEMON = "http://127.0.0.1:7810"
+
+ASK = ("Find me a used road bike under $500 near Boston, 56 cm frame. "
+       "Shortlist the best three and message the top seller about a test ride.")
+PLAN = [
+    ("step", "Started a space for it: bikes, with two researchers", {"space": "bikes"}),
+    ("step", "bikes is searching PedalSwap for road bikes under $500", {"space": "bikes"}),
+    ("step", "wren is reading reviews of the most promising models", {"space": "bikes"}),
+    ("progress", "12 listings under $500 within 15 miles; 5 in a 56 cm frame", {}),
+]
+RESULT = [
+    ("report", "Reviews agree: the 2021+ Domane AL 2 is the best all-rounder under $500 used; the Allez is "
+               "lighter, the CAAD8 stiffer but older.", {"space": "bikes", "who": "wren", "status": "done"}),
+    ("report", "Shortlist saved to your Notes. Messaged the Trek's seller about a test ride on Saturday.",
+     {"space": "bikes", "who": "bikes", "status": "done"}),
+    ("pilot", "Here's your shortlist, all 56 cm and within 15 miles:\n\n"
+              "1. **Trek Domane AL 2** (2021), $450 in Somerville: newest, new chain and bar tape\n"
+              "2. **Specialized Allez** (2019), $420 in Cambridge: lightest of the three\n"
+              "3. **Cannondale CAAD8** (2016), $380 in Brookline: cheapest, older groupset\n\n"
+              "I messaged the Trek's seller asking about a test ride on Saturday. The full comparison "
+              "is in your Notes as *Road bike shortlist*.", {"status": "done"}),
+]
+NOTES = {
+    "Agents/bikes/Road bike shortlist.md":
+        "# Road bike shortlist\n\nUsed road bikes under $500 near Boston, 56 cm frame. #bikes\n\n"
+        "| Bike | Price | Year | Where | Notes |\n|---|---|---|---|---|\n"
+        "| **Trek Domane AL 2** | $450 | 2021 | Somerville | new chain and bar tape; seller messaged |\n"
+        "| Specialized Allez | $420 | 2019 | Cambridge | lightest, Sora groupset |\n"
+        "| Cannondale CAAD8 | $380 | 2016 | Brookline | cheapest, needs new tyres |\n\n"
+        "Checks for the test ride come from [[Buying a used bike]].\n",
+    "Buying a used bike.md": "# Buying a used bike\n\n- Chain wear, brake pads, wheel wobble\n- Ask for the "
+                             "service history\n- See [[Road bike shortlist]]\n",
+    "Weekend plans.md": "# Weekend plans\n\n- Saturday: test ride (see [[Road bike shortlist]])\n- Sunday: farmers market\n",
+    "Reading list.md": "# Reading list\n\n- *The Rider*\n- *Bike Snob*\n",
+    "Agents/inbox/Newsletter digest.md": "# Newsletter digest\n\nThree worth reading this week.\n",
+}
 
 
 def serve_site() -> None:
@@ -59,13 +99,14 @@ def set_task(space: str, agent: str, task: str) -> None:
                      + (f" && printf %s {q} > ~/.hangar/task.txt" if agent == space else "")])
 
 
-def tile_studio() -> None:
-    """Browser on the left, the editor on the right, so both agents are visible."""
-    eng.exec("studio", ["bash", "-c",
-             "export DISPLAY=:1; for w in $(xdotool search --onlyvisible --class chromium); do "
-             "xdotool windowsize $w 760 800 windowmove $w 0 0; done; "
-             "for w in $(xdotool search --onlyvisible --class mousepad); do "
-             "xdotool windowsize $w 520 800 windowmove $w 760 0 windowactivate $w; done"])
+def tile(space: str, seconds: int = 14) -> None:
+    """Keep browser windows side by side as they open (the lead's left, wren's right),
+    in the background inside the space."""
+    script = ("export DISPLAY=:1; end=$((SECONDS+%d)); while [ $SECONDS -lt $end ]; do i=0; "
+              "for w in $(xdotool search --onlyvisible --class chromium | sort -n); do "
+              "xdotool windowstate --remove MAXIMIZED_VERT,MAXIMIZED_HORZ $w 2>/dev/null; "
+              "xdotool windowsize $w 640 800 windowmove $w $((i*640)) 0; i=$((i+1)); done; sleep 0.2; done") % seconds
+    eng.client.containers.get(f"hangar-{space}").exec_run(["bash", "-c", script], user="agent", detach=True)
 
 
 def pump(seconds: float) -> None:
@@ -76,24 +117,27 @@ def pump(seconds: float) -> None:
         loop.exec()
 
 
-def record(scene: str, widget, seconds: float, every: float = 1 / 12, until=None) -> None:
-    """Grab `widget` repeatedly for `seconds` (12 fps is plenty: the renderer holds frames)."""
+def _dir(scene: str) -> Path:
     d = OUT / scene
     shutil.rmtree(d, ignore_errors=True)
     d.mkdir(parents=True)
-    n, end = 0, time.time() + seconds
-    while time.time() < end:
-        widget.grab().save(str(d / f"{n:04d}.png"))
+    return d
+
+
+def record(scene: str, grab, seconds: float, every: float = 1 / 12, script=None) -> None:
+    """Grab repeatedly for `seconds`; script(t) runs between frames to move the story on."""
+    d, n, t0 = _dir(scene), 0, time.time()
+    while time.time() - t0 < seconds:
+        if script:
+            script(time.time() - t0)
+        grab().save(str(d / f"{n:04d}.png"))
         n += 1
         pump(every)
     print(f"  {scene}: {n} frames")
 
 
-def still(scene: str, widget) -> None:
-    d = OUT / scene
-    shutil.rmtree(d, ignore_errors=True)
-    d.mkdir(parents=True)
-    widget.grab().save(str(d / "0000.png"))
+def still(scene: str, grab) -> None:
+    grab().save(str(_dir(scene) / "0000.png"))
     print(f"  {scene}: 1 frame")
 
 
@@ -119,151 +163,126 @@ def background(space: str, who: str, steps) -> threading.Thread:
 
 
 def setup_demo() -> None:
+    from hangar import notes, threads
     for n in SPACES:
         eng.destroy(n)
     serve_site()
     for n in SPACES:
-        eng.create(AgentSpec(name=n))
+        eng.create(AgentSpec(name=n, flavor=FLAVOR.get(n, "base")))
     for n in SPACES:
         eng.wait_ready(n, timeout=180)
-    spaces.add_agent(eng, "studio", role="writer")          # -> wren
-    models = {"research": "claude", "studio": "local:qwen/qwen3.5-9b", "inbox": "codex", "coder": "claude"}
-    for n, role in (("research", "researcher"), ("studio", "researcher"), ("inbox", "assistant"), ("coder", "reviewer")):
+    spaces.add_agent(eng, "bikes", role="reviews")         # -> wren
+    for n, role, model in (("bikes", "researcher", "claude"), ("inbox", "assistant", "codex"),
+                           ("coder", "reviewer", "claude"), ("trip", "planner", "claude"),
+                           ("expenses", "bookkeeper", "local:qwen/qwen3.5-9b")):
         r = spaces.roster(eng, n)
-        r[0]["role"] = role
-        r[0]["model"] = models[n]
-        if n == "studio":
+        r[0]["role"], r[0]["model"] = role, model
+        if n == "bikes":
             r[1]["model"] = "local:qwen/qwen3.5-9b"
         spaces.save(n, r)
-    for key, (agent, task) in TASKS.items():
-        set_task(key.split("/")[0], agent, task)
+    set_task("bikes", "bikes", "Find used road bikes under $500 near Boston, 56 cm")
+    set_task("bikes", "wren", "Read reviews of the most promising models")
+    set_task("inbox", "inbox", "Sort today's newsletters and summarise the three worth reading")
+    set_task("coder", "coder", "Review PR #12 and check why the integration tests are pending")
+    set_task("trip", "trip", "Find flights and a quiet place to stay in Lisbon, 14-17 March")
+    set_task("expenses", "expenses", "Put October's receipts into the expense report")
+    eng.exec("expenses", ["bash", "-c", "printf 'Date,Merchant,Category,Amount\\n"
+             "Oct 2,Blue Bottle,Meals,14.50\\nOct 3,Delta,Travel,412.00\\nOct 3,Hilton,Lodging,389.20\\n"
+             "Oct 9,Uber,Travel,38.75\\nOct 14,Staples,Office,62.10\\nOct 21,Zoom,Software,15.99\\n"
+             "Oct 22,Sweetgreen,Meals,18.40\\nOct 28,Amtrak,Travel,96.00\\n,,Total,1036.94\\n' "
+             "> ~/workspace/october.csv"])
     v = vault.Vault()
-    v.add("github.com", "jack@example.com", "xocdig-fipQy7-mytbab", "JBSWY3DPEHPK3PXP", label="GitHub")
-    v.add("amazon.com", "jack@example.com", "password1", label="Amazon")
-    v.add("accounts.google.com", "jack.demo@gmail.com", "Wq9-plMx-22ab-Kk3r-uuVz", "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ",
-          label="Google")
-    v.add("notion.so", "jack@example.com", "Rv7-kqT2-mm9x-Pp4e", label="Notion")
+    v.add("pedalswap.com", "jack@example.com", "xocdig-fipQy7-mytbab", label="PedalSwap")
+    v.add("github.com", "jack@example.com", "Wq9-plMx-22ab-Kk3r", "JBSWY3DPEHPK3PXP", label="GitHub")
     pilot.save({"pilot": {"model": "claude", "account": ""},
-                    "allowed": [{"model": "claude", "account": ""}, {"model": "local:qwen/qwen3.5-9b", "account": ""}],
-                    "max_agents": 6, "internet": "open"})
-    # Opening pages, so every desktop has something on it.
-    ts = [background("research", "research", [("browser_navigate", {"url": f"{SITE}/hangars.html"})]),
+                "allowed": [{"model": "claude", "account": ""}, {"model": "local:qwen/qwen3.5-9b", "account": ""}],
+                "max_agents": 6, "internet": "open"})
+    for path, text in NOTES.items():
+        notes.write(path, text)
+    for title, user, answer in (("October expense report", "Do my expense report from the receipts folder",
+                                 "Done: 8 receipts, $1,036.94, ready to submit."),
+                                ("Lisbon in March", "Plan a long weekend in Lisbon",
+                                 "Two flight options and two quiet places to stay."),
+                                ("This week's newsletters", "Sort my newsletters", "Three are worth reading this week."),
+                                ("Review PR #12", "Review the open pull request",
+                                 "The fix looks right; one integration test is still pending.")):
+        t = threads.create(title)
+        threads.add(t["id"], "user", user)
+        threads.add(t["id"], "pilot", answer)
+        time.sleep(0.05)
+    # The page you're reading when you ask (shown from the coder space's browser, then moved on).
+    ts = [background("coder", "coder", [("browser_navigate", {"url": f"{SITE}/guide.html"}), ("wait", {"seconds": 2})]),
           background("inbox", "inbox", [("browser_navigate", {"url": f"{SITE}/inbox.html"})]),
-          background("coder", "coder", [("browser_navigate", {"url": f"{SITE}/review.html"})]),
-          background("studio", "studio", [("browser_navigate", {"url": f"{SITE}/hangars.html"})]),
-          background("studio", "wren", [("open_app", {"name": "editor"}), ("wait", {"seconds": 2})])]
+          background("trip", "trip", [("browser_navigate", {"url": f"{SITE}/trip.html"})]),
+          background("expenses", "expenses", [("open_app", {"name": "libreoffice", "args":
+                     "--calc --infilter=CSV:44,34,76,1 /home/agent/workspace/october.csv"}), ("wait", {"seconds": 6})])]
     for t in ts:
-        t.join(90)
-    tile_studio()
-    asyncio.run(drive("studio", "wren", [("wait", {"seconds": 1}), ("click", {"x": 1000, "y": 400})]))
-    for n, who, msg in (("research", "research", "Found four hangars still standing; comparing floor areas"),
-                        ("inbox", "inbox", "12 newsletters sorted; 3 worth reading"),
-                        ("studio", "studio", "Sources gathered for Hangar One, Akron and Cardington"),
-                        ("studio", "wren", "Drafting the brief"),
-                        ("coder", "coder", "The fix looks right; waiting on the integration run")):
+        t.join(120)
+    for n, who, msg in (("bikes", "bikes", "Searching PedalSwap: 12 road bikes under $500 nearby"),
+                        ("bikes", "wren", "Reading reviews of the Domane, Allez and CAAD8"),
+                        ("inbox", "inbox", "23 newsletters sorted; summarising the three worth reading"),
+                        ("coder", "coder", "The fix looks right; waiting on the integration run"),
+                        ("trip", "trip", "Two nonstop flights under $700; checking quiet places to stay"),
+                        ("expenses", "expenses", "8 receipts entered; checking totals")):
         asyncio.run(drive(n, who, [("report", {"message": msg, "status": "working"})]))
 
 
-CHAT = [
-    ("user", "I need a one-page brief on the great airship hangars that are still standing.", {}),
-    ("step", "Started a space for it: studio, with a researcher and a writer", {"space": "studio"}),
-    ("step", "studio is gathering sources", {"space": "studio"}),
-    ("step", "wren is drafting the brief", {"space": "studio"}),
-    ("progress", "Found four hangars still standing; comparing floor areas", {}),
-    ("report", "Brief drafted: three hangars, their size and history, with sources. Saved to your Notes.",
-     {"space": "studio", "who": "wren", "status": "done"}),
-    ("pilot", "Your brief is ready.\n\n"
-              "- **Hangar One**, California (1933)\n"
-              "- **Goodyear Airdock**, Akron (1929)\n"
-              "- **Cardington Sheds**, England (1917)\n\n"
-              "It's in your Notes as *Airship hangars brief*. The studio crew's changes are ready to review.",
-     {"status": "done"}),
-]
-
-NOTES = {
-    "Agents/studio/Airship hangars brief.md":
-        "# Airship hangars brief\n\nThe great airship sheds were built for zeppelins in the 1910s-30s. "
-        "A few still stand, and they are still among the largest single rooms ever built. #research\n\n"
-        "## Still standing\n"
-        "- **Hangar One**, Moffett Field, California (1933): 8 acres of floor\n"
-        "- **Goodyear Airdock**, Akron, Ohio (1929): so big it once had its own weather\n"
-        "- **Cardington Sheds**, Bedfordshire (1917 and 1928): now film studios\n\n"
-        "## Why they matter\nSee [[Lighter than air]] for the background, and [[Trip ideas]] for visiting.\n",
-    "Lighter than air.md": "# Lighter than air\n\nNotes on airships, from the Hindenburg to today's cargo designs.\n",
-    "Trip ideas.md": "# Trip ideas\n\n- Akron in the autumn; ask about Airdock tours\n- [[Airship hangars brief]]\n",
-    "Reading list.md": "# Reading list\n\n- *The Airmen Who Would Not Die*\n- *Skyfaring*\n",
-    "Agents/inbox/Newsletter digest.md": "# Newsletter digest\n\nThree worth reading this week.\n",
-}
-
-
-def record_qml(scene: str, win, seconds: float, every: float = 1 / 12, script=None) -> None:
-    """Grab a Qt Quick window repeatedly; script(t) runs between frames to move the story on."""
-    d = OUT / scene
-    shutil.rmtree(d, ignore_errors=True)
-    d.mkdir(parents=True)
-    n, t0 = 0, time.time()
-    while time.time() - t0 < seconds:
-        if script:
-            script(time.time() - t0)
-        win.grabWindow().save(str(d / f"{n:04d}.png"))
-        n += 1
-        pump(every)
-    print(f"  {scene}: {n} frames")
-
-
-def still_qml(scene: str, win) -> None:
-    d = OUT / scene
-    shutil.rmtree(d, ignore_errors=True)
-    d.mkdir(parents=True)
-    win.grabWindow().save(str(d / "0000.png"))
-    print(f"  {scene}: 1 frame")
-
-
-def find_obj(root, prop: str):
-    from PySide6.QtCore import QObject
-    for o in root.findChildren(QObject):
-        if o.metaObject().indexOfProperty(prop) >= 0 and o.metaObject().indexOfProperty("tab") >= 0:
-            return o
-    return None
+def guide_shot():
+    """A screenshot of 'your screen' (the guide), for the Ask scene."""
+    import httpx
+    from PySide6.QtGui import QImage
+    r = httpx.get(f"{DAEMON}/api/agents/coder/screenshot.png", headers={"Authorization": f"Bearer {auth.admin_token()}"},
+                  timeout=20)
+    img = QImage()
+    img.loadFromData(r.content)
+    path = TMP / "guide.png"
+    img.save(str(path))
+    return img, path
 
 
 def main() -> None:
-    from PySide6.QtCore import QUrl
+    from PySide6.QtCore import QPoint, QUrl
+    from PySide6.QtGui import QImage, QPainter
     from PySide6.QtQml import QQmlApplicationEngine, qmlRegisterType
     from PySide6.QtQuickControls2 import QQuickStyle
 
-    from hangar import notes, snapshots, threads
+    import httpx
+    from hangar import snapshots, threads
     from hangar.apps import common, home
-    app = common.make_app("spaces")
+    common.make_app("spaces")
     pid = int((auth.STATE_DIR / "daemon.pid").read_text())
+    admin = {"Authorization": f"Bearer {auth.admin_token()}"}
     try:
         print("setting up the demo…")
         setup_demo()
-        for path, text in NOTES.items():
-            notes.write(path, text)
-        # The studio crew's workspace before the task, so Review has something to show.
-        eng.exec("studio", ["bash", "-c", "cd ~/workspace && printf '# Brief\\n\\nTODO\\n' > brief.md && "
-                                          "printf 'Sources\\n- wikipedia\\n' > sources.md && printf 'old\\n' > notes.txt"])
-        snapshots.take(eng, "studio", "before: the airship hangars brief")
-        eng.exec("studio", ["bash", "-c", "cd ~/workspace && cat > brief.md <<'EOF'\n"
-                            "# The great airship hangars\n\nBuilt for zeppelins, a few still stand:\n\n"
-                            "- Hangar One, Moffett Field, California (1933)\n"
-                            "- Goodyear Airdock, Akron, Ohio (1929)\n"
-                            "- Cardington Sheds, Bedfordshire (1917, 1928)\n\n"
-                            "## Size\nHangar One covers 8 acres; the Airdock is 1,175 ft long.\nEOF\n"
-                            "printf 'Sources\\n- NASA Ames history office\\n- Akron Beacon Journal archive\\n"
-                            "- Historic England listing\\n' > sources.md && rm notes.txt && "
-                            "printf 'Hangar,Year,Length (ft)\\nHangar One,1933,1133\\nAirdock,1929,1175\\n' > hangars.csv"])
+        eng.exec("bikes", ["bash", "-c", "cd ~/workspace && printf 'Look at: PedalSwap, Craigslist\\n' > todo.txt"])
+        snapshots.take(eng, "bikes", "before: find a used road bike")
+        guide, guide_path = guide_shot()
+        asyncio.run(drive("coder", "coder", [("browser_navigate", {"url": f"{SITE}/review.html"})]))
 
-        # Older chats, so the sidebar looks lived in.
-        for title, user, answer in (("Newsletter digest", "Sort my newsletters", "Three are worth reading this week."),
-                                    ("Review PR #12", "Review the open pull request",
-                                     "The fix looks right; one test is still pending.")):
-            t = threads.create(title)
-            threads.add(t["id"], "user", user)
-            threads.add(t["id"], "pilot", answer)
-            time.sleep(0.05)
+        # 1. Ask from anywhere: the panel over the page you're reading.
+        from hangar.apps.ask import AskPanel
+        p = AskPanel()
+        ctx = {"app": "Firefox", "title": "Buying a used road bike · Cycle Commute",
+               "url": "https://cyclecommute.example/used-road-bike", "selection": ""}
+        p.open(guide_path, ctx, {"screenshot", "url"})
+        pump(0.3)
 
+        def over_screen() -> QImage:
+            img = guide.scaled(1600, 1000).convertToFormat(QImage.Format_RGB32)
+            panel = p.grab().toImage()
+            q = QPainter(img)
+            q.drawImage(QPoint((img.width() - panel.width()) // 2, 150), panel)
+            q.end()
+            return img
+        typed = {"i": 0}
+
+        def type_more(_t: float) -> None:
+            typed["i"] = min(len(ASK), typed["i"] + 4)
+            p.input.setPlainText(ASK[:typed["i"]])
+        record("ask", over_screen, 7.5, every=1 / 12, script=type_more)
+
+        # Your desktop's Hangar: the conversation with the pilot.
         QQuickStyle.setStyle("Basic")
         qmlRegisterType(home.LiveDesktop, "Hangar", 1, 0, "LiveDesktop")
         qmlRegisterType(home.Picture, "Hangar", 1, 0, "Picture")
@@ -277,72 +296,140 @@ def main() -> None:
         engine.load(QUrl.fromLocalFile(str(home.QML / "Home.qml")))
         win = engine.rootObjects()[0]
         win.resize(1600, 900)
-        pump(6)
+        panel = None
+        pump(5)
 
-        # 1. Just ask: the conversation builds up as the crew works.
-        brief = threads.create("Airship hangars brief")
-        threads.add(brief["id"], *CHAT[0][:2], **CHAT[0][2])
-        threads.set_active(brief["id"])
+        def find_panel():
+            from PySide6.QtCore import QObject
+            for o in win.findChildren(QObject):
+                mo = o.metaObject()
+                if mo.indexOfProperty("control") >= 0 and mo.indexOfProperty("tab") >= 0:
+                    return o
+
+        # 2. The pilot plans it and puts a crew on it.
+        chat = threads.create("Road bike under $500")
+        threads.add(chat["id"], "user", ASK, screenshot=True)
+        threads.set_active(chat["id"])
+        threads.link_space("bikes", chat["id"])
         bridge.refresh()
-        bridge.openThread(brief["id"])
-        pump(2)
-        shown = {"n": 1}
+        bridge.openThread(chat["id"])
+        pump(1.5)
+        shown = {"n": 0}
 
-        def story(t: float) -> None:
-            want = min(len(CHAT), 1 + int(t / 1.25))
+        def plan(t: float) -> None:
+            want = min(len(PLAN), int((t - 0.8) / 1.3) + 1) if t > 0.8 else 0
             while shown["n"] < want:
-                kind, text, meta = CHAT[shown["n"]]
-                threads.add(brief["id"], kind, text, **meta)
-                if kind == "pilot":
-                    threads.clear_active()
+                kind, text, meta = PLAN[shown["n"]]
+                threads.add(chat["id"], kind, text, **meta)
                 shown["n"] += 1
                 bridge.refresh()
-                bridge.openThread(brief["id"])
-        record_qml("chat", win, 11, script=story)
+                bridge.openThread(chat["id"])
+        record("plan", win.grabWindow, 8, script=plan)
 
-        # 2. Watch them work: the studio space, two agents at once.
-        bridge.select("studio")
-        pump(5)
-        text = ("# The great airship hangars\n\n"
-                "Built for zeppelins, a few still stand:\n"
-                "- Hangar One, California (1933)\n"
-                "- Goodyear Airdock, Akron (1929)\n"
-                "- Cardington Sheds, England\n")
-        background("studio", "wren", [("type_text", {"text": text})])
-        background("studio", "studio", [("move_mouse", {"x": 260, "y": 330}), ("wait", {"seconds": 1}),
-                                        ("scroll", {"direction": "down", "amount": 3, "x": 380, "y": 420}),
-                                        ("move_mouse", {"x": 470, "y": 380}), ("wait", {"seconds": 1.2}),
-                                        ("scroll", {"direction": "down", "amount": 3, "x": 470, "y": 420}),
-                                        ("move_mouse", {"x": 330, "y": 470}), ("wait", {"seconds": 1}),
-                                        ("move_mouse", {"x": 520, "y": 520})])
-        record_qml("space", win, 10)
-
-        # 3. Step in: take over the desktop.
-        panel = find_obj(win, "control")
-        panel.setProperty("control", True)
-        pump(1.5)
-        still_qml("takeover", win)
-        panel.setProperty("control", False)
-
-        # 4. Review the crew's changes.
-        panel.setProperty("tab", 1)
-        bridge.loadReview("studio")
+        # 3. Watch them work: each agent gets its own task and starts from a bare desktop.
+        bridge.select("bikes")
         pump(4)
-        still_qml("review", win)
-        panel.setProperty("tab", 0)
+        started = {"lead": False, "wren": False}
 
-        # 5. Everything at a glance.
+        def go(t: float) -> None:
+            if t > 2.6 and not started["lead"]:
+                started["lead"] = True
+                tile("bikes")
+                background("bikes", "bikes", LEAD)
+            if t > 3.6 and not started["wren"]:
+                started["wren"] = True
+                background("bikes", "wren", WREN)
+        LEAD = [
+            ("browser_navigate", {"url": f"{SITE}/market.html"}), ("wait", {"seconds": 1.5}),
+            ("move_mouse", {"x": 300, "y": 420}), ("wait", {"seconds": 0.8}),
+            ("scroll", {"direction": "down", "amount": 3, "x": 380, "y": 420}), ("wait", {"seconds": 1}),
+            ("move_mouse", {"x": 150, "y": 330}), ("wait", {"seconds": 0.8}),
+            ("browser_navigate", {"url": f"{SITE}/listing.html"}), ("wait", {"seconds": 1.2}),
+            ("move_mouse", {"x": 260, "y": 640}), ("wait", {"seconds": 0.6}),
+            ("scroll", {"direction": "down", "amount": 2, "x": 380, "y": 500})]
+        WREN = [
+            ("open_app", {"name": "browser", "args": f"--new-window {SITE}/reviews.html"}), ("wait", {"seconds": 1}),
+            ("move_mouse", {"x": 980, "y": 300}), ("wait", {"seconds": 1.2}),
+            ("scroll", {"direction": "down", "amount": 2, "x": 960, "y": 450}), ("wait", {"seconds": 1.5}),
+            ("move_mouse", {"x": 900, "y": 470}), ("wait", {"seconds": 1.2}),
+            ("scroll", {"direction": "down", "amount": 3, "x": 960, "y": 450}), ("wait", {"seconds": 1.2}),
+            ("move_mouse", {"x": 1010, "y": 560})]
+        record("space", win.grabWindow, 13, script=go)
+
+        # 4. Other jobs keep going: everything at a glance.
         bridge.select("")
         bridge.overviewRequested.emit()
-        pump(2)
-        background("research", "research", [("scroll", {"direction": "down", "amount": 5, "x": 640, "y": 500})])
-        background("inbox", "inbox", [("wait", {"seconds": 1.5}),
-                                       ("scroll", {"direction": "down", "amount": 3, "x": 640, "y": 500})])
-        record_qml("overview", win, 4, every=1 / 6)
+        pump(2.5)
+        background("inbox", "inbox", [("scroll", {"direction": "down", "amount": 3, "x": 640, "y": 500})])
+        background("coder", "coder", [("wait", {"seconds": 1}),
+                                      ("scroll", {"direction": "down", "amount": 3, "x": 640, "y": 500})])
+        background("trip", "trip", [("wait", {"seconds": 0.5}),
+                                    ("scroll", {"direction": "down", "amount": 3, "x": 640, "y": 500})])
+        record("overview", win.grabWindow, 5, every=1 / 6)
+
+        # 5. A sign-in waits for your OK (the agent never sees the password).
+        from PySide6.QtCore import QObject
+        for o in win.findChildren(QObject):
+            if o.metaObject().indexOfProperty("shown") >= 0:
+                o.setProperty("shown", False)
+        bridge.openThread(chat["id"])
+        req = httpx.post(f"{DAEMON}/api/agents/bikes/vault/requests",
+                         json={"kind": "login", "site": "pedalswap.com", "reason": "to message the Trek's seller",
+                               "who": "bikes"},
+                         headers={"Authorization": f"Bearer {auth.agent_token('bikes')}"}, timeout=10).json()
+        pump(3)
+        record("approve", win.grabWindow, 3.5, every=1 / 6)
+        httpx.post(f"{DAEMON}/api/vault/requests/{req['id']}/deny", headers=admin, timeout=10)
+        threads.add(chat["id"], "approval", "You let bikes sign in to pedalswap.com (Hangar filled it in)")
+        bridge.refreshApprovals()
+
+        # 6. Step in: take the wheel on the agent's desktop, mid-message.
+        asyncio.run(drive("bikes", "bikes", [("browser_navigate", {"url": f"{SITE}/message.html"}), ("wait", {"seconds": 1}),
+                                             ("click", {"x": 380, "y": 300}),
+                                             ("type_text", {"text": "Hi! Is the Trek still available? Could I take "
+                                                                    "it for a test ride on Saturday morning?"})]))
+        bridge.select("bikes")
+        pump(4)
+        panel = find_panel()
+        panel.setProperty("control", True)
+        pump(1.5)
+        still("takeover", win.grabWindow)
+        panel.setProperty("control", False)
+
+        # 7. Review every change the crew made.
+        eng.exec("bikes", ["bash", "-c", "cd ~/workspace && cat > shortlist.md <<'EOF'\n"
+                           "# Road bike shortlist\n\n1. Trek Domane AL 2, $450, Somerville (2021)\n"
+                           "2. Specialized Allez, $420, Cambridge (2019)\n3. Cannondale CAAD8, $380, Brookline (2016)\n"
+                           "\nMessaged the Trek's seller about Saturday.\nEOF\n"
+                           "printf 'bike,price,size,year,where\\nTrek Domane AL 2,450,56,2021,Somerville\\n"
+                           "Specialized Allez,420,56,2019,Cambridge\\nCannondale CAAD8,380,56,2016,Brookline\\n"
+                           "Giant Contend 3,495,54,2022,Quincy\\n' > listings.csv && rm -f todo.txt"])
+        panel.setProperty("tab", 1)
+        bridge.loadReview("bikes")
+        pump(4)
+        still("review", win.grabWindow)
+        panel.setProperty("tab", 0)
+
+        # 8. One answer, with the work done.
+        bridge.select("")
+        pump(1)
+        done = {"n": 0}
+
+        def finish(t: float) -> None:
+            want = min(len(RESULT), int(t / 1.4) + 1)
+            while done["n"] < want:
+                kind, text, meta = RESULT[done["n"]]
+                threads.add(chat["id"], kind, text, **meta)
+                if kind == "pilot":
+                    threads.clear_active()
+                done["n"] += 1
+                bridge.refresh()
+                bridge.openThread(chat["id"])
+        record("answer", win.grabWindow, 7.5, script=finish)
         del engine
         pump(0.5)
 
-        # 6. Notes, shared with the crew.
+        # 9. Findings land in your notes.
         from hangar.apps import notes as notes_app
         engine = QQmlApplicationEngine()
         nb = notes_app.Notes()
@@ -350,54 +437,14 @@ def main() -> None:
         engine.addImportPath(str(home.QML))
         engine.load(QUrl.fromLocalFile(str(home.QML / "Notes.qml")))
         nwin = engine.rootObjects()[0]
-        nwin.resize(1440, 860)
+        nwin.resize(1500, 860)
         pump(2)
-        nb.open("Agents/studio/Airship hangars brief.md")
+        nb.open("Agents/bikes/Road bike shortlist.md")
         pump(1.5)
         nwin.setProperty("editing", False)
         pump(1)
-        still_qml("notes", nwin)
+        still("notes", nwin.grabWindow)
         del engine
-
-        # 7. Sign-ins stay yours: an agent asks, the user approves in Passwords.
-        import httpx
-        httpx.post("http://127.0.0.1:7810/api/agents/research/vault/requests",
-                   json={"kind": "login", "site": "github.com", "reason": "to open the pull requests you mentioned"},
-                   headers={"Authorization": f"Bearer {auth.agent_token('research')}"}, timeout=10)
-        from hangar.apps.passwords import PasswordsWindow
-        pw = PasswordsWindow()
-        pw.resize(1280, 760)
-        pw.show()
-        pump(4)
-        pw.pick_entry(next(e["id"] for e in pw.data["entries"] if e["label"] == "GitHub"))
-        pump(2)
-        record("passwords", pw, 3, every=0.5)
-
-        # 8. Ask from anywhere: the quick panel over whatever you're doing.
-        from hangar.apps.ask import AskPanel
-        p = AskPanel()
-        shot = OUT / "space" / "0060.png"
-        ctx = {"app": "Firefox", "title": "Hangar One · Moffett Field history", "url": "https://example.org/hangar-one",
-               "selection": ""}
-        p.open(shot if shot.exists() else None, ctx, {"screenshot", "url"})
-        p.input.setPlainText("How big is this compared to the others?")
-        pump(0.3)
-        d = OUT / "ask"
-        shutil.rmtree(d, ignore_errors=True)
-        d.mkdir(parents=True)
-        n = 0
-        for _ in range(14):
-            p.grab().save(str(d / f"{n:04d}.png"))
-            n += 1
-        p.answer.setText("Hangar One is the second largest of the three: about 8 acres, a little smaller than "
-                         "Akron's Airdock. Both dwarf the Cardington sheds.")
-        p.answer.show()
-        p.adjustSize()
-        pump(0.3)
-        for _ in range(40):
-            p.grab().save(str(d / f"{n:04d}.png"))
-            n += 1
-        print(f"  ask: {n} frames")
     finally:
         for n in SPACES:
             eng.destroy(n)

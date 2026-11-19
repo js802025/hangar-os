@@ -1,4 +1,4 @@
-"""Turn the captured frames into the walkthrough video (1080p, 30 fps, with music).
+"""Turn the captured frames into the demo video (1080p, 30 fps, with music).
 
 Each scene sits on the Hangar wallpaper with rounded corners and a soft shadow,
 drifts in slowly, crossfades into the next, and has a caption. Frames are drawn
@@ -26,23 +26,31 @@ FADE = 0.6
 # (scene, seconds, caption title, caption detail, capture fps)
 SCENES = [
     ("title", 4.0, "", "", 0),
-    ("setup", 8.0, "Ready in minutes", "Connect the AI you already pay for, get local models sized for your PC, "
-                                       "and meet your pilot.", 0),
-    ("chat", 11.0, "Just ask", "Tell your pilot what you need. It plans the work, puts a crew of agents on it, "
-                               "and keeps you posted in one conversation.", 12),
-    ("space", 9.0, "Watch them work", "Every agent has a desktop of its own. A crew can share one, each with its "
-                                      "own cursor.", 12),
-    ("takeover", 4.5, "Step in anytime", "Take the wheel on any desktop, then hand it back.", 0),
-    ("review", 6.0, "Review every change", "See exactly what your crew changed. Undo any file, or open it in "
-                                           "your editor.", 0),
-    ("overview", 4.5, "Everything at a glance", "Every space, live, one key away.", 6),
-    ("notes", 6.0, "Notes you share with your crew", "Agents keep what they find in your notes, in plain "
-                                                     "Markdown that works with Obsidian too.", 0),
-    ("passwords", 6.0, "Your sign-ins stay yours", "Agents ask to sign in. You approve, and Hangar fills it "
-                                                   "in. Agents never see a password.", 2),
-    ("ask", 6.0, "Ask from anywhere", "Ask about whatever is on your screen, by typing or by voice.", 12),
+    ("why", 5.0, "Most of your to-do list happens on a computer.",
+     "Hangar hands it to a crew of AI agents that use one, just like you do.", 0),
+    ("ask", 7.0, "Hand it off the moment you think of it",
+     "Ask about whatever is on your screen. No setup, no integrations.", 12),
+    ("plan", 8.0, "A crew takes it from there",
+     "Your pilot breaks the job down and puts agents on it, each with a computer of its own.", 12),
+    ("space", 12.5, "They work the way you do",
+     "Real websites, real apps, real files. If you can do it on a computer, so can they.", 12),
+    ("overview", 5.0, "Many jobs at once",
+     "Shopping, email, code, travel, paperwork: all moving while you get on with your day.", 6),
+    ("approve", 4.5, "Your accounts stay yours",
+     "Agents ask before they sign in anywhere, and never see a password.", 6),
+    ("takeover", 4.0, "You're always in charge", "Watch any agent work, step in, and hand it back.", 0),
+    ("review", 5.0, "Nothing happens behind your back", "See every change, and undo anything you don't like.", 0),
+    ("answer", 8.0, "Come back to finished work", "One answer, with the work already done.", 12),
+    ("notes", 5.0, "It all adds up", "What your crew finds is kept in your notes, for you and for them.", 0),
+    ("private", 5.0, "It lives on your computer.",
+     "Agents see only the folders you share, and can run on AI models on your own machine.", 0),
     ("outro", 5.0, "", "", 0),
 ]
+CARDS = {"why", "private"}
+SAME_WINDOW = {"plan", "space", "overview", "approve", "takeover", "review", "answer"}
+# The pilot hands each agent its own job as the space scene opens (seconds into the scene).
+ASSIGN = {"space": (0.8, 4.2, [("#7c9cff", "bikes", "Search PedalSwap for 56 cm road bikes under $500 near Boston"),
+                                ("#f472b6", "wren", "Read reviews of the most promising models")])}
 SETUP_STEPS = ["setup-0-welcome", "setup-2-accounts", "setup-3-models", "setup-4-pilot", "setup-5-notify",
                "setup-6-done"]
 
@@ -52,7 +60,7 @@ class Scene:
         self.name, self.seconds, self.title, self.detail, self.cap_fps = name, seconds, title, detail, cap_fps
         if name == "setup":
             self.images = [QImage(str(ROOT / "out" / f"{s}.png")) for s in SETUP_STEPS]
-        elif name in ("title", "outro"):
+        elif name in ("title", "outro") or name in CARDS:
             self.images = []
         else:
             self.images = [QImage(str(p)) for p in sorted((FRAMES / name).glob("*.png"))]
@@ -81,7 +89,7 @@ def draw_window(p: QPainter, img: QImage, t: float, dur: float, transparent: boo
     """The captured window, fitted into the frame, with a slow drift-in zoom."""
     area_w, area_h = W * 0.80, H * 0.72
     s = min(area_w / img.width(), area_h / img.height())
-    s *= 0.97 + 0.03 * ease(t / dur)          # gentle push-in
+    # No zoom: consecutive scenes of the same window line up exactly, so a crossfade only changes its content.
     w, h = img.width() * s, img.height() * s
     x, y = (W - w) / 2, (H - h) / 2 - 50
     r = 18
@@ -137,7 +145,7 @@ def draw_card(p: QPainter, kind: str, t: float, dur: float) -> None:
     """Title and outro: the Hangar mark and a line."""
     a = ease(t / 0.9) * (1 - ease((t - (dur - 0.6)) / 0.6) if kind == "outro" else 1)
     p.save()
-    p.setOpacity(a)
+    p.setOpacity(p.opacity() * a)
     glow = QRadialGradient(QPointF(W / 2, H / 2 - 40), 420)
     glow.setColorAt(0, QColor(124, 156, 255, 60))
     glow.setColorAt(1, QColor(124, 156, 255, 0))
@@ -165,9 +173,83 @@ def draw_card(p: QPainter, kind: str, t: float, dur: float) -> None:
     f2.setPixelSize(30)
     p.setFont(f2)
     p.setPen(QColor("#a9b4cc"))
-    line = ("An operating system for AI agents" if kind == "title"
-            else "A crew of AI agents, working for you.")
+    line = ("The operating system with a crew of AI agents built in" if kind == "title"
+            else "Your computer, with a crew.")
     p.drawText(QRectF(0, H / 2 + 120, W, 50), Qt.AlignCenter, line)
+    p.restore()
+
+
+def text_alpha(t: float, dur: float, first: bool, last: bool) -> float:
+    """Text fades in only after the crossfade into this scene is over, and is gone
+    before the crossfade out starts, so two scenes' words never overlap."""
+    a_in = 1.0 if first else ease((t - FADE) / 0.4)
+    a_out = 1.0 if last else ease((dur - FADE - t) / 0.3)
+    return max(0.0, min(a_in, a_out))
+
+
+def draw_assign(p: QPainter, rows, a: float) -> None:
+    """A small 'the pilot gave out these tasks' card over the scene."""
+    if a <= 0:
+        return
+    p.save()
+    p.setOpacity(a)
+    mono = QFont("Menlo")
+    mono.setStyleHint(QFont.Monospace)
+    mono.setPixelSize(22)
+    head = QFont("Inter")
+    head.setPixelSize(17)
+    head.setWeight(QFont.DemiBold)
+    p.setFont(mono)
+    w = max(p.fontMetrics().horizontalAdvance(f"{n}  {t}") for _c, n, t in rows) + 110
+    h = 64 + 46 * len(rows)
+    x, y = (W - w) / 2, 250 - 16 * (1 - a)
+    p.setPen(Qt.NoPen)
+    for i in range(12, 0, -3):
+        p.setBrush(QColor(0, 0, 0, 14))
+        p.drawRoundedRect(QRectF(x - i, y - i + 8, w + 2 * i, h + 2 * i), 20 + i, 20 + i)
+    p.setBrush(QColor(13, 16, 23, 240))
+    p.setPen(QPen(QColor(124, 156, 255, 90), 1.4))
+    p.drawRoundedRect(QRectF(x, y, w, h), 18, 18)
+    p.setFont(head)
+    p.setPen(QColor("#a7bbff"))
+    p.drawText(QRectF(x + 28, y + 16, w - 56, 26), Qt.AlignLeft | Qt.AlignVCenter, "✦  Pilot → crew")
+    for i, (color, name, task) in enumerate(rows):
+        ry = y + 54 + 46 * i
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(color))
+        p.drawEllipse(QRectF(x + 30, ry + 12, 14, 14))
+        p.setFont(mono)
+        p.setPen(QColor(color))
+        nw = p.fontMetrics().horizontalAdvance(name + "  ")
+        p.drawText(QRectF(x + 56, ry, nw + 10, 38), Qt.AlignLeft | Qt.AlignVCenter, name)
+        p.setPen(QColor("#e8eaf0"))
+        p.drawText(QRectF(x + 56 + nw, ry, w - nw - 80, 38), Qt.AlignLeft | Qt.AlignVCenter, task)
+    p.restore()
+
+
+def draw_statement(p: QPainter, line: str, sub: str, t: float, dur: float, ta: float = 1.0) -> None:
+    """A full-frame statement between the screen scenes."""
+    p.save()
+    base = p.opacity()
+    p.fillRect(0, 0, W, H, QColor(6, 8, 12, 150))
+    glow = QRadialGradient(QPointF(W / 2, H / 2), 700)
+    glow.setColorAt(0, QColor(124, 156, 255, 45))
+    glow.setColorAt(1, QColor(124, 156, 255, 0))
+    p.fillRect(0, 0, W, H, glow)
+    p.setOpacity(base * ta)
+    rise = 14 * (1 - ease((t - FADE) / 1.0))
+    f = QFont("Inter")
+    f.setPixelSize(60)
+    f.setWeight(QFont.DemiBold)
+    p.setFont(f)
+    p.setPen(QColor("#ffffff"))
+    p.drawText(QRectF(160, H / 2 - 120 + rise, W - 320, 150), Qt.AlignHCenter | Qt.AlignBottom | Qt.TextWordWrap, line)
+    p.setOpacity(base * ta * ease((t - FADE - 0.4) / 0.8))
+    f2 = QFont("Inter")
+    f2.setPixelSize(32)
+    p.setFont(f2)
+    p.setPen(QColor("#a9b4cc"))
+    p.drawText(QRectF(260, H / 2 + 50 + rise, W - 520, 120), Qt.AlignHCenter | Qt.AlignTop | Qt.TextWordWrap, sub)
     p.restore()
 
 
@@ -205,17 +287,35 @@ def main() -> None:
             lt = t - st
             if lt < 0 or lt > s.seconds:
                 continue
-            alpha = min(1.0, ease(lt / FADE) if st > 0 else 1.0, ease((s.seconds - lt) / FADE) if s is not scenes[-1] else 1.0)
+            i = scenes.index(s)
+            prev = scenes[i - 1] if i else None
+            nxt = scenes[i + 1] if i + 1 < len(scenes) else None
+            # Between two shots of the same Hangar window, cut quickly instead of a slow
+            # crossfade, so its layout never shows twice at once.
+            quick_in = prev is not None and prev.name in SAME_WINDOW and s.name in SAME_WINDOW
+            quick_out = nxt is not None and nxt.name in SAME_WINDOW and s.name in SAME_WINDOW
+            a_in = 1.0 if st == 0 else (ease((lt - FADE / 2 + 0.06) / 0.12) if quick_in else ease(lt / FADE))
+            a_out = 1.0 if nxt is None else (ease((s.seconds - lt - FADE / 2 + 0.06) / 0.12) if quick_out
+                                             else ease((s.seconds - lt) / FADE))
+            alpha = min(1.0, a_in, a_out)
             p.save()
             p.setOpacity(alpha)
+            ta = text_alpha(lt, s.seconds, s is scenes[0], s is scenes[-1])
             if s.name in ("title", "outro"):
+                p.setOpacity(alpha * ta)
                 draw_card(p, s.name, lt, s.seconds)
+            elif s.name in CARDS:
+                draw_statement(p, s.title, s.detail, lt, s.seconds, ta)
             else:
                 img = s.image_at(lt)
                 if img is not None and not img.isNull():
-                    draw_window(p, img, lt, s.seconds, transparent=s.name == "ask")
+                    draw_window(p, img, lt, s.seconds)
             p.restore()
-            draw_caption(p, s.title, s.detail, alpha * ease((lt - 0.3) / 0.5))
+            if s.name in ASSIGN:
+                a0, a1, rows = ASSIGN[s.name]
+                draw_assign(p, rows, min(ease((lt - a0) / 0.35), ease((a1 - lt) / 0.35)))
+            if s.name not in CARDS:
+                draw_caption(p, s.title, s.detail, ta)
         p.end()
         ff.stdin.write(frame.constBits().tobytes())
         if f % (FPS * 5) == 0:

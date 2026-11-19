@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from pathlib import Path
 
 from PySide6.QtCore import QByteArray, Qt, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices, QPainter, QPixmap
@@ -290,6 +291,12 @@ HELP = {"ntfy": "Easiest for phones: install the ntfy app and subscribe to a har
         "telegram": "Make a bot with @BotFather, then message it once."}
 
 
+def _home_short(path: str) -> str:
+    home = str(Path.home().resolve())
+    path = str(Path(path).resolve())
+    return "~" + path[len(home):] if path.startswith(home + "/") else path
+
+
 class SettingsWindow(Page):
     def __init__(self) -> None:
         super().__init__("Hangar Settings")
@@ -327,7 +334,7 @@ class SettingsWindow(Page):
                     "max_agents": cap.value(), "internet": net.currentData()}
             bg(lambda: common.api.put("/api/orchestration", body), lambda _: self.toast("Orchestration saved"))
         return panel("Orchestration",
-                     label("The pilot is your main agent: ask it anything (the Ask box in Hangar, or "
+                     label("The pilot is your main agent: ask it anything (chat in Hangar, Ask Hangar, or "
                            "`hangar ask`), and it answers or puts agents to work.", "dim", wrap=True),
                      label("Pilot model", "dim"), cond,
                      label("Models it may give agents", "dim"),
@@ -381,7 +388,7 @@ class SettingsWindow(Page):
             lambda: common.api.put("/api/notes/access", {"agents": pick.currentData()}),
             lambda _: self.toast("Notes access saved")))
         return panel("Notes",
-                     label(f"Your notes are Markdown files in <code>{na['root']}</code> (open the folder in "
+                     label(f"Your notes are Markdown files in <code>{_home_short(na['root'])}</code> (open the folder in "
                            "Obsidian too). Agents keep what they find there, in their own folder.", "dim", wrap=True),
                      label("What agents can see", "dim"), pick)
 
