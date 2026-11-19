@@ -32,7 +32,8 @@ your own computer works like every other agent's.
    - a model that can see the screen: visual work (layouts, images, canvases);
    - cloud models (Claude, GPT): judgement, writing, code, long multi-step work.
 5. Pick the space's **flavor**: `research` (reading, browsing), `coding` (dev
-   tools), `office` (LibreOffice documents and spreadsheets), or `base`.
+   tools), `office` (LibreOffice documents and spreadsheets), or `base`. Web work
+   doesn't need a desktop: agents browse in Hangar's browser.
 6. `computer: "mac"` only on Hangar for Mac, and only when the work needs a Mac
    app. There are at most two, and each takes a lot of memory.
 7. If the user limits new spaces' internet, pass `sites`: just the domains the
@@ -52,8 +53,10 @@ Agents start with nothing but your task. Make each one stand alone:
 - when to stop, and to report `waiting_on_user` instead of guessing on anything
   that costs money or can't be undone.
 
-Ask for results, not clicks: agents work by command and web fetch first and use
-the screen only when a site or app needs it. Don't script their clicks.
+Ask for results, not clicks. Agents work by command and web fetch first, use
+Hangar's browser (background tabs, no desktop) for sites that need input, and
+use a desktop only for the smallest part nothing else can do. Don't script
+their clicks.
 
 ## While they work
 

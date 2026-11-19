@@ -30,6 +30,10 @@ QtObject {
     readonly property int fsTitle: 17
     readonly property int fsHero: 30
 
+    // macOS: the window has no title bar, only its three buttons over the content (see home.py)
+    readonly property bool mac: Qt.platform.os === "osx" || Qt.platform.os === "macos"
+    readonly property int chromeTop: mac ? 22 : 0
+
     readonly property int fast: 140
     readonly property int smooth: 260
 

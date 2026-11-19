@@ -19,8 +19,9 @@ REPLACED = ("screenshot", "screen_info", "click", "move_mouse", "drag", "type_te
 INSTRUCTIONS = (
     "You have a Linux container for the work itself and a Mac (a macOS VM) as your screen. "
     "Do everything you can without the Mac: run_command, read_file and write_file in your "
-    "container for files, data and scripts, and web_search / web_fetch to find and read "
-    "pages. Use the Mac (screenshot, click, type_text, key, scroll) only for what needs a "
+    "container for files, data and scripts, web_search / web_fetch to find and read pages, "
+    "and Hangar's browser (tab_open / tab_read / tab_click / tab_type / tab_run) for sites "
+    "that need input. Use the Mac (screenshot, click, type_text, key, scroll) only for what needs a "
     "Mac app or a page that needs real input. Coordinates are screenshot pixels from the "
     "top-left; use Mac shortcuts (cmd+space then an app's name and return to open it, cmd+l "
     "for a browser's address bar). Call `report` to post progress, and `report(final=True)` "

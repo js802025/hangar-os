@@ -53,6 +53,21 @@ struct Daemon: Sendable {
         return data
     }
 
+    /// Any admin request (JSON in, the response body out).
+    func request(_ method: String, _ path: String, body: Data? = nil) async throws -> Data {
+        var req = URLRequest(url: base.appendingPathComponent(path), timeoutInterval: 60)
+        req.httpMethod = method
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        if let body {
+            req.httpBody = body
+            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        }
+        let (data, resp) = try await URLSession.shared.data(for: req)
+        let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+        guard code < 500 else { throw Problem.http(code) }
+        return data
+    }
+
     func alive() async -> Bool {
         var req = URLRequest(url: base.appendingPathComponent("healthz"), timeoutInterval: 2)
         req.httpMethod = "GET"

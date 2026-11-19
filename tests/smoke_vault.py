@@ -177,10 +177,34 @@ def main() -> None:
             assert "said no" in msg, msg
             print("5. denied request: ok")
 
+            # 6. a login supplied once (Hangar for Mac, from Apple Passwords): filled, not kept
+            ONCE = "0nce-From-Apple-Passwords"
+            admin.delete(f"/api/vault/grants/v-agent/{entry['id']}")      # no standing approval now
+            seen.append(await call("browser_navigate", url=f"{url}/login"))
+            before = len(Vault().entries())
+            approval = loop.run_in_executor(None, approve_when_pending, "login",
+                                            {"login": {"username": "bob@example.com", "password": ONCE}})
+            msg = await call("request_login", site="example.net", reason="one-time login")
+            seen.append(msg)
+            res = await approval
+            # example.net isn't this page's host, so it must refuse; then the right host fills
+            assert res["status"] == "failed" and "not example.net" in res["message"], res
+            approval = loop.run_in_executor(None, approve_when_pending, "login",
+                                            {"login": {"username": "bob@example.com", "password": ONCE}})
+            msg = await call("request_login", site="hangar-host", reason="one-time login")
+            seen.append(msg)
+            assert (await approval)["status"] == "filled" and "a login from the user" in msg, msg
+            snap = await call("browser_snapshot")
+            ref = next(line.split("]")[0][1:] for line in snap.splitlines() if 'button "Sign in"' in line)
+            seen.append(await call("browser_click", ref=int(ref)))
+            assert posts[-1] == {"path": "/login", "email": "bob@example.com", "pass": ONCE}, posts
+            assert len(Vault().entries()) == before and ONCE not in AUDIT.read_text()
+            print("6. one-time login (Apple Passwords on a Mac): filled, never stored or logged: ok")
+
         asyncio.run(agent_session(a.mcp_url, a.auth_headers, flow))
 
         everything = "\n".join(seen)
-        assert PASSWORD not in everything and TOTP_KEY not in everything
+        assert PASSWORD not in everything and TOTP_KEY not in everything and "0nce-From" not in everything
         print("the agent never saw the password or 2FA key: ok")
 
         # Another agent can't read this agent's requests (or make them as it).

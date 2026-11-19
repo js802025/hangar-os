@@ -78,6 +78,7 @@ def resolve_model(eng: Engine, model: str, account: str = "", account_base: str 
             # Another OpenAI-compatible server instead of LM Studio (Ollama, vLLM, …): trust the name.
             out["env"] = {"HANGAR_LLM_URL": os.environ["HANGAR_LLM_URL"],
                           "HANGAR_MODEL_VISION": os.environ.get("HANGAR_LLM_VISION", "1")}
+            _with_pi(eng, out)
             return out
         studio = lm.LMStudio()
         if not studio.installed:
@@ -95,6 +96,16 @@ def resolve_model(eng: Engine, model: str, account: str = "", account_base: str 
         studio.ensure_loaded(m.key)
         out["model"] = f"local:{m.key}"
         out["env"] = {"HANGAR_LLM_URL": lm.AGENT_URL, "HANGAR_MODEL_VISION": "1" if m.vision else "0"}
+        _with_pi(eng, out)
     else:
         raise SetupError(f"Unknown model '{model}'. Use claude, codex or local:<model>.")
     return out
+
+
+def _with_pi(eng, out: dict) -> None:
+    """Local models run on pi (the harness Aside's browser agent is built on) when it's
+    installed (`hangar harness install pi`); otherwise on Hangar's built-in loop."""
+    try:
+        out.setdefault("volumes", {}).update(harness_mod.mount(eng, "pi"))
+    except harness_mod.NotInstalled:
+        pass

@@ -303,11 +303,25 @@ def ui(print_only: bool = typer.Option(False, "--print", help="Only print the UR
 APP_NAMES = ["home", "notes", "passwords", "accounts", "models", "settings"]
 
 
+def ui_python() -> str:
+    """The interpreter for Hangar's windows: on a Mac with Hangar.app built, its
+    helper app (so the Dock says "Hangar", not python); otherwise this one."""
+    return os.environ.get("HANGAR_UI_PYTHON") or sys.executable
+
+
 @app.command("open")
-def open_app(name: str = typer.Argument("home", help=" | ".join(APP_NAMES)),
+def open_app(name: str = typer.Argument("home", help=" | ".join(APP_NAMES) + " | space NAME"),
+             space: str = typer.Argument("", help="For `hangar open space NAME`: the space"),
              web: bool = typer.Option(False, "--web", help="Open the web version in a browser instead")):
     """Open one of Hangar's apps (native Qt windows; --web for the browser version)."""
     name = "home" if name == "spaces" else name
+    if name == "space" and not web:           # one space in its own window (its own desktop or Space)
+        agent_or_exit(space)
+        if not ensure_daemon():
+            raise typer.Exit(1)
+        subprocess.Popen([ui_python(), "-m", "hangar.apps.space", space], start_new_session=True,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return
     if name not in APP_NAMES:
         con.print(f"[red]Unknown app.[/] Pick one of: {', '.join(APP_NAMES)}")
         raise typer.Exit(1)
@@ -319,7 +333,7 @@ def open_app(name: str = typer.Argument("home", help=" | ".join(APP_NAMES)),
         except ImportError:
             con.print("[yellow]Native apps need PySide6 (uv sync --extra apps); opening the web version.[/]")
         else:
-            subprocess.Popen([sys.executable, "-m", f"hangar.apps.{name}"], start_new_session=True,
+            subprocess.Popen([ui_python(), "-m", f"hangar.apps.{name}"], start_new_session=True,
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             return
     _open_web_app(name)

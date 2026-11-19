@@ -63,6 +63,8 @@ def main() -> None:
     if kde.available():
         kde.ensure_desktop(name)
         QTimer.singleShot(400, lambda: kde.place(caption, name))
+    elif sys.platform == "darwin":
+        win.showFullScreen()                  # macOS gives a full-screen window its own Space
     else:
         win.showMaximized()
 

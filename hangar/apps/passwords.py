@@ -10,6 +10,7 @@ and which agents may use each password. Agents' requests show at the top.
 from __future__ import annotations
 
 import secrets
+import sys
 import time
 from datetime import datetime
 
@@ -436,7 +437,12 @@ class PasswordsWindow(QMainWindow):
 
 
 def main() -> None:
-    common.run("passwords", PasswordsWindow)
+    """Passwords opens in Hangar's window (`--standalone` for the old window)."""
+    if "--standalone" in sys.argv:
+        common.run("passwords", PasswordsWindow)
+        return
+    from hangar.apps import home
+    home.open_view("passwords")
 
 
 if __name__ == "__main__":

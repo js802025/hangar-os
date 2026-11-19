@@ -9,6 +9,8 @@ enum Runtime {
     static func repo() -> URL? {
         let fm = FileManager.default
         if let r = ProcessInfo.processInfo.environment["HANGAR_REPO"] { return URL(fileURLWithPath: r) }
+        if let r = Bundle.main.object(forInfoDictionaryKey: "HangarRepo") as? String,   // set by build-app.sh
+           fm.isExecutableFile(atPath: r + "/mac/bin/hangar") { return URL(fileURLWithPath: r) }
         let starts = [Bundle.main.executableURL, URL(fileURLWithPath: fm.currentDirectoryPath)].compactMap { $0 }
         for start in starts {
             var dir = start.standardizedFileURL
@@ -40,6 +42,27 @@ enum Runtime {
         p.standardOutput = h
         p.standardError = h
         try p.run()
+    }
+
+    /// The helper app Hangar's windows run from, so the Dock says "Hangar" (build-app.sh).
+    static var uiPython: String? {
+        let p = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/Hangar.app/Contents/MacOS/Hangar").path
+        return FileManager.default.isExecutableFile(atPath: p) ? p : nil
+    }
+
+    /// Run a hangar command in the background (e.g. `open` to show Hangar's window).
+    static func run(_ args: [String]) {
+        guard let exe = hangar else { return }
+        let p = Process()
+        p.executableURL = exe
+        p.arguments = args
+        var env = ProcessInfo.processInfo.environment
+        if let ui = uiPython { env["HANGAR_UI_PYTHON"] = ui }
+        env["PATH"] = (env["PATH"] ?? "") + ":/opt/homebrew/bin:/usr/local/bin:" + NSHomeDirectory() + "/.local/bin"
+        p.environment = env
+        p.standardOutput = FileHandle.nullDevice
+        p.standardError = FileHandle.nullDevice
+        try? p.run()
     }
 
     /// Run a hangar command in Terminal (for the interactive ones, like Mac setup).

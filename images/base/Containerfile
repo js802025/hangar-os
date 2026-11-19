@@ -12,7 +12,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         tini ca-certificates curl wget git jq ripgrep unzip less procps nano \
-        python3 python3-venv python3-pip nodejs npm \
+        python3 python3-venv python3-pip xz-utils \
         tigervnc-standalone-server tigervnc-tools openbox x11-xserver-utils \
         xdotool xinput xclip xterm dbus-x11 \
         at-spi2-core libatk-adaptor python3-gi gir1.2-atspi-2.0 \
@@ -22,7 +22,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         fonts-noto-core fonts-noto-cjk fonts-noto-color-emoji fonts-dejavu-core \
     && rm -rf /var/lib/apt/lists/*
 
-# Agent harnesses (Claude Code, Codex CLI) are NOT in the image: Hangar installs
+# Node.js 22 LTS (the harnesses and the in-app browser's Playwright session need >= 22),
+# from nodejs.org, checked against its published checksums.
+ARG NODE_VERSION=22.23.4
+RUN arch="$(dpkg --print-architecture)"; case "$arch" in amd64) n=x64;; arm64) n=arm64;; *) exit 1;; esac; \
+    f="node-v${NODE_VERSION}-linux-${n}.tar.xz"; cd /tmp && \
+    curl -fsSLO "https://nodejs.org/dist/v${NODE_VERSION}/${f}" && \
+    curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/SHASUMS256.txt" | grep " ${f}\$" | sha256sum -c - && \
+    tar -xJf "$f" -C /usr/local --strip-components=1 --no-same-owner \
+        --exclude='*/CHANGELOG.md' --exclude='*/README.md' --exclude='*/include' && \
+    rm -f "$f" && node --version && npm --version
+
+# Agent harnesses (Claude Code, Codex CLI, pi) are NOT in the image: Hangar installs
 # the ones you use into shared volumes, mounted read-only at /opt/harness/<name>
 # (see hangar/harness.py). Credentials aren't either: each agent gets its
 # account's volume at /hangar/account (see hangar/accounts.py).
@@ -36,6 +47,10 @@ ENV PIP_DEFAULT_TIMEOUT=120 PIP_RETRIES=8
 RUN python3 -m venv /opt/hangar/venv \
     && /opt/hangar/venv/bin/pip install --no-cache-dir /opt/hangar/mcp-desktop
 
+# The agent's Playwright session for Hangar's in-app browser (the tab_* tools).
+COPY tab/package.json tab/package-lock.json tab/repl.mjs /opt/hangar/tab/
+RUN cd /opt/hangar/tab && npm ci --omit=dev --no-audit --no-fund && rm -rf /root/.npm
+
 COPY base/rootfs/ /
 RUN chmod +x /opt/hangar/bin/* \
     && useradd --create-home --shell /bin/bash --uid 1000 agent \
@@ -44,7 +59,7 @@ RUN chmod +x /opt/hangar/bin/* \
 
 USER agent
 WORKDIR /home/agent/workspace
-ENV PATH=/opt/hangar/bin:/opt/hangar/venv/bin:/opt/harness/claude/bin:/opt/harness/codex/bin:$PATH
+ENV PATH=/opt/hangar/bin:/opt/hangar/venv/bin:/opt/harness/claude/bin:/opt/harness/codex/bin:/opt/harness/pi/bin:$PATH
 
 # 6080 = noVNC (websockify), 8765 = MCP (streamable HTTP at /mcp).
 # Publish these only on 127.0.0.1; the Hangar daemon proxies them.

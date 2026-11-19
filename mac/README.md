@@ -91,28 +91,30 @@ told it's on a Mac.
   documentation and are covered by a test with a fake `terminal-mac`
   (`tests/smoke_mac.py`).
 
-## Apple Passwords (design, not built yet)
+## Apple Passwords
 
 macOS has no API for an app to read Apple Passwords (iCloud Keychain): an
 app only sees its own keychain items. That's the right rule for Hangar too,
-so the integration goes through **AutoFill**, with you in the loop:
+so sign-ins go through **AutoFill**, with you in the loop:
 
-1. An agent calls `request_login(site)` as today.
-2. Hangar for Mac shows a native approval sheet naming the agent, the site
-   and why, with a username field (`.username`) and a password field
-   (`NSSecureTextField`, `.password`). macOS offers your saved logins there;
-   you pick one with Touch ID, as in any app.
-3. Approve sends them once to the daemon, which types them into the agent's
-   browser (the existing fill path) and doesn't keep them. A new approve
-   variant takes the credentials in the request instead of a vault entry.
-4. Verification codes work the same way with a `.oneTimeCode` field, which
-   the Passwords app fills from its own 2FA codes.
+1. An agent calls `request_login(site)` as on Hangar OS.
+2. A notification appears in the corner ("bikes wants to sign in to
+   pedalswap.com"), with **Sign in…** and **Deny**. Nothing takes your focus or
+   pops up over your work. Deny answers from the notification.
+3. Sign in… (or clicking the notification, the ✦ menu, or "Sign in" in
+   Hangar's window) opens Hangar's sign-in prompt, in Hangar's own look: the
+   agent, the site and why, with a username and a password field marked for
+   AutoFill. macOS offers your saved logins there ("Passwords…", Touch ID).
+4. **Sign in** sends that login to the daemon once
+   (`POST /api/vault/requests/ID/approve {"login": {...}}`), which types it
+   into the agent's browser through the usual fill path, and only if the
+   browser is on that site. It isn't stored or logged, and the agent never
+   sees it (`tests/smoke_vault.py`, step 6).
+5. Verification codes use a one-time-code field, which Passwords fills from
+   its own 2FA codes. Logins saved in Hangar's vault can still be picked.
 
-So Apple Passwords stays the only copy, the agent never sees a password
-(the fill happens inside its browser; the model only learns it worked), and
-Hangar's own vault becomes optional on a Mac. Passkeys can't be lent: they
-stay on your devices, so sites that only offer passkeys need you to sign in
-yourself ("Take over").
+Passkeys can't be lent: they stay on your devices, so sites that only offer
+passkeys need you to sign in yourself ("Take over").
 
 ## Mapping Hangar OS to the Mac
 
@@ -123,7 +125,7 @@ yourself ("Take over").
 | "Attach this window" / screenshot | ScreenCaptureKit (needs the Screen Recording permission, asked only when used) |
 | Space on its own KWin virtual desktop | Space in a full-screen window, so its own macOS Space |
 | Hangar app (QML) | SwiftUI shell; the daemon API stays the same |
-| Passwords vault | Apple Passwords through AutoFill (above), or the same vault; Touch ID to approve |
+| Passwords vault | Apple Passwords through AutoFill (above), or the same vault |
 | systemd user service for the daemon | A `launchd` agent (`SMAppService`) running the bundled daemon |
 | Rollback of the whole OS | Not applicable; snapshots of each space still work |
 
@@ -176,25 +178,19 @@ and the containers, not by the desktop:
 ```bash
 brew install container                       # Apple's container (macOS 26, Apple silicon)
 make mac-images                              # build the agent images with it
-mac/bin/hangar new demo                      # `hangar`, with agents on Apple's container
-cd mac/HangarMac && swift run HangarMac      # the menu bar ✦ (starts Hangar if needed)
+mac/build-app.sh                             # builds mac/build/Hangar.app
+open mac/build/Hangar.app
 ```
 
-`mac/bin/hangar` is the normal CLI with `HANGAR_RUNTIME=apple`; it starts
-Apple's container service if it isn't running. For Mac computers, install
-[terminal-mac](https://github.com/govijr/terminal-mac) and run
-`mac/bin/hangar mac setup`.
+**Hangar.app** starts Hangar on Apple's container and opens Hangar's own
+window, with Hangar's browser built in (agents browse there, in the
+background, instead of on a desktop; see [docs/browser.md](../docs/browser.md)): the same app as on Hangar OS (chats with the pilot, spaces, review,
+overview), without the title bar on a Mac, just the window buttons. Popping a
+space out puts it full screen on its own macOS Space. A ✦ in the menu bar
+opens Hangar, lists spaces, shows sign-in requests and sets up Mac computers.
 
-### The app
+`mac/bin/hangar` is the CLI with the same setup (`HANGAR_RUNTIME=apple`). For
+Mac computers, install [terminal-mac](https://github.com/govijr/terminal-mac)
+and run `mac/bin/hangar mac setup`.
 
-`HangarMac/` is a small SwiftPM menu bar app:
-
-- A ✦ lists the daemon's spaces (Mac ones marked), starts Hangar if it isn't
-  running, and offers "Set Up a Mac Computer…" and "Take over the Mac".
-- Choosing a space opens a window showing its live desktop in full screen,
-  so it gets its own Space in Mission Control, titled "✦ <space>".
-- It reads the daemon's admin token the same way the CLI does (an HMAC of
-  `~/.local/state/hangar/secret`), so there's nothing to configure.
-
-`swift run HangarMac --open NAME` pops a space straight out. Quitting the app
-closes the windows, and macOS removes their Spaces.
+Hangar.app runs Hangar from this checkout, so rebuild it if you move the folder.

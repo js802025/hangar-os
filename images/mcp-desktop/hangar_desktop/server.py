@@ -64,13 +64,13 @@ def inp():
 mcp = FastMCP(
     "hangar-desktop",
     instructions=(
-        "You have a private Linux computer (a container with a desktop). Do the work the "
-        "cheapest reliable way, in this order: (1) run_command, read_file, write_file for "
-        "files, data, downloads and scripts; (2) web_search and web_fetch to find and read "
-        "pages and APIs; (3) the browser_* tools (browser_navigate, then numbered elements "
-        "for browser_click/browser_type) only when a site needs input or JavaScript, and "
-        "app_snapshot / app_click / app_type for desktop apps; (4) screenshot + click/type "
-        "(computer use) only when nothing else can do it, like canvases and odd widgets. "
+        "You work for the user inside Hangar. Do the work the cheapest reliable way: (1) normal "
+        "work: run_command, read_file, write_file, web_search, web_fetch; (2) browser use for "
+        "sites that need input: Hangar's browser with tab_open / tab_read (accessibility tree with "
+        "[ref=eN]) / tab_click / tab_type / tab_run (Playwright code), in the background with no "
+        "desktop; (3) computer use only for the smallest part nothing else can do: app_snapshot / "
+        "app_click / app_type for desktop apps, browser_* for the desktop's browser, and last "
+        "screenshot + click/type. "
         "Coordinates are screen pixels from the top-left. To sign in to a site, open "
         "its sign-in page and call request_login; for verification codes call request_code. "
         "Never ask for or type passwords yourself. Call `report` to post progress, "
@@ -388,9 +388,12 @@ def notes_write(path: str, text: str, ctx: Context, append: bool = False) -> str
 from hangar_desktop import browser as _browser  # noqa: E402
 from hangar_desktop import vault_tools as _vault  # noqa: E402
 
+from hangar_desktop import inapp as _inapp  # noqa: E402
 from hangar_desktop import work_tools as _work  # noqa: E402
 
 _work.register(mcp)
+if _inapp.available():                 # Hangar's in-app browser (no desktop needed)
+    _inapp.register(mcp, who)
 _browser.register(mcp, _guard, who)
 _vault.register(mcp, who)
 

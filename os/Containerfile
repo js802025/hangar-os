@@ -18,7 +18,7 @@ ENV UV_CACHE_DIR=/tmp/uv-cache \
     UV_PYTHON_DOWNLOADS=automatic
 RUN dnf -y install uv && \
     UV_PYTHON_INSTALL_DIR=/usr/lib/hangar/python uv venv --python 3.13 /usr/lib/hangar/venv && \
-    VIRTUAL_ENV=/usr/lib/hangar/venv uv pip install --no-cache "/tmp/hangar-src[apps,voice]" && \
+    VIRTUAL_ENV=/usr/lib/hangar/venv uv pip install --no-cache "/tmp/hangar-src[apps,voice,browser]" && \
     ln -s /usr/lib/hangar/venv/bin/hangar /usr/lib/hangar/venv/bin/hangar-app /usr/bin/ && \
     rm -rf /tmp/hangar-src /tmp/uv-cache && dnf clean all
 

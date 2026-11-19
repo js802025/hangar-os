@@ -419,10 +419,18 @@ accessibility tree, agents fall back to screenshot + click.
 
 ## Agent tools and skills
 
-Agents work the cheapest reliable way: commands and files first, then the web
-without a browser, then element-based browser and app tools when something
-needs real input, and computer use (screenshots and clicks) only when nothing
-else can do it.
+Agents work the cheapest reliable way:
+
+1. **Normal work:** commands, files, `web_search` and `web_fetch`.
+2. **Browser use:** Hangar's own browser for sites that need input, with the
+   `tab_*` tools (accessibility tree with refs, Playwright code). Its tabs run
+   in the background, in each space's own profile, with no desktop. See
+   [browser.md](browser.md).
+3. **Computer use:** a desktop or a Mac computer, only for the smallest part
+   nothing above can do.
+
+Local models run on **pi** (the harness Aside's browser agent is built on) once
+it's installed: `hangar harness install pi`.
 
 Every agent gets Hangar's **skills**, which explain all this: `hangar` (its
 computer, tools, teammates, reports, notes, sign-ins and limits) and, for the
@@ -436,6 +444,10 @@ local models get them in their system prompt.
 
 | tool | what it does |
 |---|---|
+| `tab_open`, `tab_go`, `tab_read` | Hangar's browser: open or go to a page, read it as an accessibility tree with `[ref=eN]` refs |
+| `tab_click`, `tab_type`, `tab_select` | act on a ref |
+| `tab_run` | Playwright code against the agent's tab (`page`, `context`, `ref(id)`) |
+| `tab_tabs`, `tab_switch`, `tab_close`, `tab_screenshot` | the space's tabs; a picture only as a fallback |
 | `run_command` | a bash command in the agent's container (its workspace by default) |
 | `read_file`, `write_file` | files, relative to the workspace |
 | `web_search`, `web_fetch` | search the web and read pages or APIs without a browser (through the space's network rules) |

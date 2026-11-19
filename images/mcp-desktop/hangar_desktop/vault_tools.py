@@ -42,7 +42,17 @@ async def _first_visible(frame, selector):
 
 
 async def fill(site: str, username: str = "", password: str = "", code: str = "", agent: str = "") -> dict:
-    """Fill a login or code into the agent's current page, only if it's on `site`."""
+    """Fill a login or code into the agent's current page, only if it's on `site`: its tab in
+    Hangar's browser if it's working there, else the desktop's browser."""
+    from hangar_desktop import inapp
+    import anyio
+    if inapp.available() and inapp.recently_used(agent or os.environ.get("HANGAR_AGENT_NAME", "")):
+        try:
+            return await anyio.to_thread.run_sync(lambda: inapp.fill(
+                agent or os.environ.get("HANGAR_AGENT_NAME", ""), site, username, password, code))
+        except RuntimeError as e:
+            if "no tab open" not in str(e):
+                raise
     page = await link.page(agent)
     u = urlsplit(page.url)
     if not _matches(u.hostname or "", site):

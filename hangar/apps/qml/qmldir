@@ -8,3 +8,14 @@ ChatView 1.0 ChatView.qml
 SpacePanel 1.0 SpacePanel.qml
 ReviewView 1.0 ReviewView.qml
 Overview 1.0 Overview.qml
+HField 1.0 HField.qml
+HSwitch 1.0 HSwitch.qml
+HSelect 1.0 HSelect.qml
+SettingRow 1.0 SettingRow.qml
+Group 1.0 Group.qml
+SignInSheet 1.0 SignInSheet.qml
+SettingsView 1.0 SettingsView.qml
+PasswordsView 1.0 PasswordsView.qml
+NotesView 1.0 NotesView.qml
+Glyph 1.0 Glyph.qml
+BrowserView 1.0 BrowserView.qml

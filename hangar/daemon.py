@@ -24,6 +24,8 @@ import contextlib
 import html
 import json
 import os
+import subprocess
+import sys
 import threading
 import time
 from datetime import datetime, timezone
@@ -127,7 +129,8 @@ class AdminAuth:
         path, method = scope["path"], scope.get("method", "GET")
         parts = path.split("/")
         agent_route = len(parts) == 5 and parts[1:3] == ["api", "agents"] and parts[4] in ("messages", "team")
-        agent_route = agent_route or (len(parts) == 6 and parts[1:3] == ["api", "agents"] and parts[4] == "computer")
+        agent_route = agent_route or (len(parts) == 6 and parts[1:3] == ["api", "agents"]
+                                      and parts[4] in ("computer", "browser"))
         if (path in self.OPEN or path.startswith("/ui/") or vault_api.is_agent_route(path) or agent_route
                 or notes_api.is_agent_route(path)
                 or path.startswith("/pilot/")
@@ -233,6 +236,75 @@ async def computer(request: Request) -> Response:
         return JSONResponse(await run_in_threadpool(macvm.act, a.vm, act, body if isinstance(body, dict) else {}))
     except macvm.MacVMError as e:
         return JSONResponse({"error": str(e)}, status_code=502)
+
+
+# -- the in-app browser (Hangar's own, see docs/browser.md) ---------------------------------
+
+def _browser_ctl(start: bool = True) -> dict | None:
+    """Where Hangar's browser listens; starts Hangar in the background if needed."""
+    from hangar import browser_relay
+    ctl = browser_relay.control()
+    if ctl or not start:
+        return ctl
+    ui = os.environ.get("HANGAR_UI_PYTHON") or sys.executable
+    subprocess.Popen([ui, "-m", "hangar.apps.home", "--background"], start_new_session=True,
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    for _ in range(80):
+        time.sleep(0.25)
+        if ctl := browser_relay.control():
+            return ctl
+    return None
+
+
+async def browser_tabs(request: Request) -> JSONResponse:
+    """A space's tabs in Hangar's browser (GET), or a new one (POST {"url"})."""
+    if not agent_or_admin(request):
+        return JSONResponse({"error": "bad token"}, status_code=401)
+    name = request.path_params["name"]
+    if not await get_agent(name):
+        return not_found(name)
+    ctl = await run_in_threadpool(_browser_ctl)
+    if not ctl:
+        return JSONResponse({"error": "Hangar's browser isn't available here"}, status_code=503)
+    auth_h = {"Authorization": f"Bearer {ctl['key']}"}
+    async with httpx.AsyncClient(timeout=30) as http:
+        if request.method == "POST":
+            body = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
+            r = await http.post(f"http://127.0.0.1:{ctl['control']}/tabs", headers=auth_h,
+                                json={"space": name, "url": str(body.get("url", ""))})
+        else:
+            r = await http.get(f"http://127.0.0.1:{ctl['control']}/tabs", params={"space": name}, headers=auth_h)
+    return JSONResponse(r.json(), status_code=r.status_code)
+
+
+async def browser_cdp(ws: WebSocket) -> None:
+    """Playwright's connection to a space's tabs (only its own; see browser_relay)."""
+    name = ws.path_params["name"]
+    tok = (ws.headers.get("authorization", "")[7:] if ws.headers.get("authorization", "").startswith("Bearer ")
+           else ws.query_params.get("token", ""))
+    if not (auth.check(tok, auth.agent_token(name)) or auth.check(tok, auth.admin_token())):
+        await ws.close(code=4401)
+        return
+    if not await get_agent(name):
+        await ws.close(code=4404)
+        return
+    ctl = await run_in_threadpool(_browser_ctl)
+    if not ctl:
+        await ws.close(code=4503)
+        return
+    await ws.accept()
+    from hangar import browser_relay
+    try:
+        await browser_relay.relay(ws, name, ctl)
+    except (WebSocketDisconnect, websockets.ConnectionClosed):
+        pass
+    except Exception as e:  # noqa: BLE001 - logged; the agent sees the connection close
+        log(f"browser relay for {name}: {type(e).__name__}: {e}")
+    finally:
+        try:
+            await ws.close()
+        except (RuntimeError, WebSocketDisconnect):
+            pass
 
 
 async def logs(request: Request) -> Response:
@@ -733,6 +805,8 @@ web = Starlette(routes=[
     Route(f"{A}/screenshot.png", screenshot),
     Route(f"{A}/logs", logs),
     Route(f"{A}/computer/{{action}}", computer, methods=["GET", "POST"]),
+    Route(f"{A}/browser/tabs", browser_tabs, methods=["GET", "POST"]),
+    WebSocketRoute(f"{A}/browser/cdp", browser_cdp),
     Route(f"{A}/reports", get_reports, methods=["GET"]),
     Route(f"{A}/reports", post_report, methods=["POST"]),
     *(Route(f"{A}/{fn.__name__}", action(fn), methods=["POST"])

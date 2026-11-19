@@ -1,17 +1,18 @@
 import AppKit
 
-/// Hangar for Mac, spike: a ✦ in the menu bar listing the daemon's spaces.
-/// Pick one and it opens full screen, on a macOS Space of its own. Agents run
-/// on Apple's container; a space can also have a Mac computer (a macOS VM).
+/// Hangar for Mac: Hangar's own app (the same window as on Hangar OS: chats,
+/// spaces, review), plus what only a Mac needs, from a ✦ in the menu bar:
+/// starting Hangar on Apple's container, spaces full screen on their own macOS
+/// Space, sign-ins from Apple Passwords, and Mac computers.
 @MainActor
 final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var item: NSStatusItem!
     var daemon: Daemon?
-    var windows: [String: SpaceWindow] = [:]
     var spaces: [Daemon.Space] = []
     var problem: String?
     var down = false
     var starting = false
+    var approvals: Approvals?
 
     func applicationDidFinishLaunching(_ note: Notification) {
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -21,7 +22,7 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         item.menu = menu
         Task {
             await refresh()
-            if down { startDaemon() }          // start Hangar with the app
+            if down { startDaemon() } else { openHangar() }   // start Hangar with the app
             // `HangarMac --open NAME` pops a space straight out (handy for testing).
             let args = CommandLine.arguments
             if let i = args.firstIndex(of: "--open"), i + 1 < args.count { open(args[i + 1]) }
@@ -43,7 +44,13 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return
         }
         down = false
-        starting = false
+        if starting { starting = false; openHangar() }    // it just came up: show Hangar
+        if approvals == nil {
+            let a = Approvals(daemon: daemon)
+            a.onChange = { [weak self] in self?.rebuild() }
+            a.start()
+            approvals = a
+        }
         do {
             spaces = try await daemon.spaces()
             problem = nil
@@ -88,6 +95,12 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func rebuild() {
         guard let menu = item.menu else { return }
         menu.removeAllItems()
+        if !down {
+            let o = NSMenuItem(title: "Open Hangar", action: #selector(openHangarPicked), keyEquivalent: "o")
+            o.target = self
+            menu.addItem(o)
+            menu.addItem(.separator())
+        }
         if let problem {
             add(menu, problem, nil)
             if down && !starting { add(menu, "Start Hangar", #selector(startPicked)) }
@@ -96,9 +109,8 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } else {
             add(menu, "Spaces", nil)
             for s in spaces {
-                let mark = windows[s.name] != nil ? "  ●" : ""
                 let kind = s.isMac ? "  (Mac)" : ""
-                let m = NSMenuItem(title: "✦ \(s.name)\(kind)\(mark)", action: #selector(pick(_:)), keyEquivalent: "")
+                let m = NSMenuItem(title: "✦ \(s.name)\(kind)", action: #selector(pick(_:)), keyEquivalent: "")
                 m.representedObject = s.name
                 m.target = self
                 m.toolTip = [s.status, s.model, s.task].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
@@ -112,6 +124,13 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 }
             }
         }
+        if let n = approvals?.pending.count, n > 0 {
+            menu.addItem(.separator())
+            add(menu, n == 1 ? "1 Sign-in Request…" : "\(n) Sign-in Requests…", #selector(showApprovals))
+            item.button?.title = "✦ \(n)"
+        } else {
+            item.button?.title = "✦"
+        }
         menu.addItem(.separator())
         add(menu, "Set Up a Mac Computer…", #selector(setUpMac))
         menu.addItem(.separator())
@@ -119,6 +138,21 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc func startPicked() { startDaemon() }
+
+    @objc func openHangarPicked() { openHangar() }
+
+    /// Hangar's own window (the Qt app, the same as on Hangar OS).
+    func openHangar() { Runtime.run(["open", "home"]) }
+
+    /// hangar-mac://approve/ID: Hangar's window hands sign-ins to the Passwords prompt.
+    func application(_ application: NSApplication, open urls: [URL]) {
+        for u in urls where u.scheme == "hangar-mac" {
+            if u.host == "approve", let id = u.pathComponents.last, id != "/" { approvals?.show(id: id) }
+            else if u.host == "open" { openHangar() }
+        }
+    }
+
+    @objc func showApprovals() { approvals?.showFirst() }
 
     @objc func pick(_ sender: NSMenuItem) {
         if let name = sender.representedObject as? String { open(name) }
@@ -133,14 +167,9 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         Runtime.inTerminal(["mac", "setup"])
     }
 
+    /// The space in Hangar's own space window, full screen on its own macOS Space.
     func open(_ name: String) {
-        guard let daemon else { return }
-        if let w = windows[name] { w.focus(); return }
-        let w = SpaceWindow(space: name, daemon: daemon, fullScreen: true)
-        w.onClose = { [weak self] in self?.windows[name] = nil; self?.rebuild() }
-        windows[name] = w
-        NSApp.activate(ignoringOtherApps: true)
-        rebuild()
+        Runtime.run(["open", "space", name])
     }
 }
 

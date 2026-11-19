@@ -1,4 +1,7 @@
-"""Agent harnesses (Claude Code, Codex CLI), installed only when needed.
+"""Agent harnesses (Claude Code, Codex CLI, pi), installed only when needed.
+
+pi (github.com/earendil-works/pi, from pi-mono) is the harness Aside's browser
+agent is built on; Hangar runs local models (LM Studio) with it.
 
 They aren't baked into the agent images (together they're over 1 GB). Each
 one is installed once into its own volume, `hangar-harness-<name>-<version>`,
@@ -28,6 +31,7 @@ LABEL = "dev.hangar.harness"
 HARNESSES = {
     "claude": {"package": "@anthropic-ai/claude-code", "title": "Claude Code"},
     "codex": {"package": "@openai/codex", "title": "Codex CLI"},
+    "pi": {"package": "@earendil-works/pi-coding-agent", "title": "pi"},
 }
 MOUNT = "/opt/harness/{}"
 
@@ -116,7 +120,8 @@ def prepare_install(eng: Engine, name: str, version: str = "") -> tuple[str, lis
         pass
     eng.client.volumes.create(vol, labels={LABEL: name, f"{LABEL}.version": version,
                                            f"{LABEL}.created": str(time.time())})
-    script = (f"npm install -g --no-fund --no-audit --prefix /h {pkg}@{version} && "
+    flags = "--ignore-scripts " if name == "pi" else ""           # pi's own recommendation
+    script = (f"npm install -g --no-fund --no-audit {flags}--prefix /h {pkg}@{version} && "
               "chmod -R a+rX /h && touch /h/.hangar-complete && echo 'Installed.'")
     argv = run_argv(["--rm", "-t", "--user", "root", "-v", f"{vol}:/h"], BASE_IMAGE, ["bash", "-c", script])
     if not argv:

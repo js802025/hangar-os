@@ -38,6 +38,8 @@ uv run python tests/smoke_m7.py   # M7: snapshots, accessibility tools, network 
 uv run python tests/smoke_m9.py   # M9: two agents on one desktop, window lock, messaging rules, pilot
 uv run --extra apps --extra voice python tests/smoke_m10.py  # M10: Ask panel with context, local voice
 uv run --extra apps python tests/smoke_m11.py  # M11: notes + agent access, review diffs, Home and Notes apps
+uv run --extra apps --extra browser python tests/smoke_browser.py  # Hangar's browser: tabs, relay scope, fill
+uv run python tests/smoke_mac.py               # Mac computers (fake terminal-mac)
 ```
 
 Screenshots from the smoke test land in `out/`. `make clean` removes all

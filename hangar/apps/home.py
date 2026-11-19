@@ -10,6 +10,7 @@ event stream, plus a native live-desktop item and a thumbnail provider.
 from __future__ import annotations
 
 import base64
+import os
 import shutil
 import struct
 import subprocess
@@ -302,7 +303,187 @@ class LiveDesktop(QQuickPaintedItem):
             self.rfb.stop()
 
 
+VIEWS = ("chat", "notes", "passwords", "settings", "browser")
+
+
+class TabPicture(QQuickPaintedItem):
+    """A tab of Hangar's browser, live (a native grab of its offscreen view).
+    While `interactive`, your mouse, wheel and keys go to the page as ordinary
+    Qt input."""
+
+    tabChanged = Signal()
+    interactiveChanged = Signal()
+    host = None                       # the BrowserHost (set by main)
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self._tab, self._interactive = "", False
+        self.img = QImage()
+        self.buttons = 0
+        self.setAcceptedMouseButtons(Qt.AllButtons)
+        self.setAcceptHoverEvents(True)
+        self.setFlag(QQuickPaintedItem.ItemAcceptsInputMethod, True)
+        self.setAntialiasing(True)
+        if TabPicture.host:
+            TabPicture.host.frame.connect(self._frame)
+
+    @Property(str, notify=tabChanged)
+    def tab(self) -> str:
+        return self._tab
+
+    @tab.setter
+    def tab(self, v: str) -> None:
+        if v == self._tab:
+            return
+        if TabPicture.host and self._tab:
+            TabPicture.host.watch(self._tab, False)
+        self._tab = v
+        if TabPicture.host and v:
+            TabPicture.host.watch(v, True)
+            self._frame(v)
+        self.tabChanged.emit()
+
+    @Property(bool, notify=interactiveChanged)
+    def interactive(self) -> bool:
+        return self._interactive
+
+    @interactive.setter
+    def interactive(self, v: bool) -> None:
+        self._interactive = v
+        self.interactiveChanged.emit()
+
+    def _frame(self, tid: str) -> None:
+        if tid == self._tab and TabPicture.host:
+            self.img = TabPicture.host.grab(tid)
+            self.update()
+
+    def releaseResources(self) -> None:
+        if TabPicture.host and self._tab:
+            TabPicture.host.watch(self._tab, False)
+
+    def target(self) -> QRectF:
+        if self.img.isNull():
+            return QRectF(0, 0, self.width(), self.height())
+        s = min(self.width() / self.img.width(), self.height() / self.img.height())
+        w, h = self.img.width() * s, self.img.height() * s
+        return QRectF((self.width() - w) / 2, (self.height() - h) / 2, w, h)
+
+    def paint(self, p: QPainter) -> None:
+        if self.img.isNull():
+            return
+        p.setRenderHint(QPainter.SmoothPixmapTransform)
+        r = self.target()
+        path = QPainterPath()
+        path.addRoundedRect(r, 10, 10)
+        p.setClipPath(path)
+        p.drawImage(r, self.img)
+
+    # your input, while interactive (coordinates in the page's 1440x900)
+    def _pos(self, e):
+        r = self.target()
+        dpr = self.img.devicePixelRatio() or 1
+        w, h = self.img.width() / dpr, self.img.height() / dpr
+        return ((e.position().x() - r.x()) * w / max(r.width(), 1),
+                (e.position().y() - r.y()) * h / max(r.height(), 1))
+
+    def _mouse(self, kind: str, e) -> None:
+        if self._interactive and TabPicture.host and self._tab:
+            x, y = self._pos(e)
+            TabPicture.host.mouse(self._tab, kind, x, y, int(e.button().value) if hasattr(e.button(), "value")
+                                  else int(e.button()), int(e.buttons().value) if hasattr(e.buttons(), "value")
+                                  else int(e.buttons()))
+
+    def mousePressEvent(self, e) -> None:
+        self.forceActiveFocus()
+        self._mouse("press", e)
+
+    def mouseReleaseEvent(self, e) -> None:
+        self._mouse("release", e)
+
+    def mouseDoubleClickEvent(self, e) -> None:
+        self._mouse("double", e)
+
+    def mouseMoveEvent(self, e) -> None:
+        self._mouse("move", e)
+
+    def hoverMoveEvent(self, e) -> None:
+        self._mouse("move", e)
+
+    def wheelEvent(self, e) -> None:
+        if self._interactive and TabPicture.host and self._tab:
+            x, y = self._pos(e)
+            d = e.angleDelta()
+            TabPicture.host.wheel(self._tab, x, y, d.x(), d.y())
+
+    def _key(self, e, press: bool) -> None:
+        if self._interactive and TabPicture.host and self._tab:
+            mods = e.modifiers().value if hasattr(e.modifiers(), "value") else int(e.modifiers())
+            TabPicture.host.key(self._tab, press, e.key(), e.text(), mods)
+            e.accept()
+
+    def keyPressEvent(self, e) -> None:
+        self._key(e, True)
+
+    def keyReleaseEvent(self, e) -> None:
+        self._key(e, False)
+
+
+class BrowserBridge(QObject):
+    """Hangar's browser for QML: tabs (yours and your spaces'), and actions on them."""
+
+    tabsChanged = Signal()
+
+    def __init__(self, host) -> None:
+        super().__init__()
+        self.host = host
+        if host:
+            host.tabsChanged.connect(self.tabsChanged)
+
+    @Property(bool, constant=True)
+    def available(self) -> bool:
+        return self.host is not None
+
+    @Property("QVariant", notify=tabsChanged)
+    def tabs(self):
+        return self.host.list() if self.host else []
+
+    @Slot(str, result=str)
+    def fixUrl(self, text: str) -> str:
+        """What you typed in the address bar, as a URL (a search if it isn't one)."""
+        text = text.strip()
+        if not text:
+            return "about:blank"
+        if " " in text or ("." not in text and ":" not in text and text != "localhost"):
+            from urllib.parse import quote_plus
+            return "https://duckduckgo.com/?q=" + quote_plus(text)
+        return QUrl.fromUserInput(text).toString()
+
+    @Slot(str, str)
+    def load(self, tid: str, url: str) -> None:
+        if self.host:
+            self.host.load(tid, url)
+
+    @Slot(str, str)
+    def go(self, tid: str, what: str) -> None:
+        if self.host:
+            self.host.navigate(tid, what)
+
+    @Slot(str)
+    def close(self, tid: str) -> None:
+        if self.host:
+            self.host.close_tab(tid)
+
+    @Slot(str, str)
+    def setDriver(self, tid: str, who: str) -> None:
+        tab = self.host.tabs.get(tid) if self.host else None
+        if tab:
+            tab.driver = who
+            self.host.tabsChanged.emit()
+
+
 class Bridge(QObject):
+    viewChanged = Signal()
+    reply = Signal(int, "QVariant", str)        # request id, data, error ("" when it worked)
     threadsChanged = Signal()
     threadChanged = Signal()
     spacesChanged = Signal()
@@ -323,6 +504,7 @@ class Bridge(QObject):
         self._review: dict = {}
         self._selected = ""
         self._pilot = ""
+        self._view, self._section = "chat", ""
         self.thumbs = thumbs
         self._thumb_busy: set[str] = set()
         self.events = common.Events(self)
@@ -337,6 +519,50 @@ class Bridge(QObject):
         slow.timeout.connect(self.refreshSpaces)
         slow.start(8000)
         self.refresh()
+
+    # -- one window: chat, notes, passwords, settings (and the browser) ---------------------
+    @Property(str, notify=viewChanged)
+    def view(self):
+        return self._view
+
+    @Property(str, notify=viewChanged)
+    def section(self):
+        return self._section
+
+    @Slot(str)
+    @Slot(str, str)
+    def showView(self, view: str, section: str = "") -> None:
+        if view in VIEWS and (view, section) != (self._view, self._section):
+            self._view, self._section = view, section
+            self.viewChanged.emit()
+
+    @Slot(int, str, str, "QVariant")
+    def request(self, rid: int, method: str, path: str, body=None) -> None:
+        """Any daemon API call for the QML views; the answer comes back on `reply`."""
+        if hasattr(body, "toVariant"):
+            body = body.toVariant()
+        common.bg(lambda: common.api.call(method, path, body if method != "GET" else None),
+                  lambda res: self.reply.emit(rid, res, ""),
+                  lambda e: self.reply.emit(rid, None, str(e) or type(e).__name__))
+
+    @Slot(str)
+    def openUrl(self, url: str) -> None:
+        from PySide6.QtGui import QDesktopServices
+        QDesktopServices.openUrl(QUrl(url))
+
+    @Slot(str)
+    @Slot(str, int)
+    def copy(self, text: str, clear_after: int = 0) -> None:
+        """Copy to the clipboard; secrets are cleared again after `clear_after` seconds."""
+        from PySide6.QtGui import QGuiApplication
+        cb = QGuiApplication.clipboard()
+        cb.setText(text)
+        if clear_after:
+            QTimer.singleShot(clear_after * 1000, lambda: cb.text() == text and cb.clear())
+
+    @Slot(result=str)
+    def platform(self) -> str:
+        return sys.platform
 
     # -- properties QML reads -------------------------------------------------------------
     @Property("QVariant", notify=threadsChanged)
@@ -433,6 +659,7 @@ class Bridge(QObject):
     # -- chat ----------------------------------------------------------------------------------
     @Slot(str)
     def openThread(self, tid: str) -> None:
+        self.showView("chat")
         def got(t) -> None:
             self._thread = t
             self.threadChanged.emit()
@@ -441,6 +668,7 @@ class Bridge(QObject):
 
     @Slot()
     def newChat(self) -> None:
+        self.showView("chat")
         self._thread = {}
         self.threadChanged.emit()
 
@@ -477,6 +705,8 @@ class Bridge(QObject):
     # -- spaces ----------------------------------------------------------------------------------
     @Slot(str)
     def select(self, name: str) -> None:
+        if name:
+            self.showView("chat")
         self._selected = name
         self._review = {}
         self.selectedChanged.emit()
@@ -543,6 +773,10 @@ class Bridge(QObject):
         if not r:
             return
         usable = [e for e in r.get("entries", []) if (e["has_password"] if r["kind"] == "login" else e["has_totp"])]
+        if sys.platform == "darwin" and not code and os.environ.get("HANGAR_RUNTIME") == "apple":
+            # Hangar for Mac: its sign-in prompt fills from Apple Passwords (and the vault)
+            subprocess.Popen(["open", f"hangar-mac://approve/{rid}"])
+            return
         body = {"entry": "" if code else (usable[0]["id"] if usable else ""), "scope": "hour", "code": code}
         common.bg(lambda: common.api.post(f"/api/vault/requests/{rid}/approve", body),
                   lambda res: (self.toast.emit("Signed in" if res["status"] == "filled" else "Couldn't fill it",
@@ -565,6 +799,9 @@ class Bridge(QObject):
 
     @Slot(str)
     def openApp(self, name: str) -> None:
+        if name in ("notes", "passwords", "settings", "accounts", "models"):     # views in this window now
+            self.showView(*({"accounts": ("settings", "accounts"), "models": ("settings", "models")}.get(name, (name, ""))))
+            return
         subprocess.Popen([sys.executable, "-m", f"hangar.apps.{name}"], start_new_session=True)
 
 
@@ -591,6 +828,23 @@ def main() -> None:
         want = "space:" + sys.argv[sys.argv.index("--space") + 1]
     elif "--overview" in sys.argv:
         want = "overview"
+    elif "--view" in sys.argv:
+        want = "view:" + sys.argv[sys.argv.index("--view") + 1]
+    elif "--note" in sys.argv:
+        want = "note:" + sys.argv[sys.argv.index("--note") + 1]
+    elif "--background" in sys.argv:
+        want = "background"
+    browser_port = None
+    if "--no-browser" not in sys.argv and os.environ.get("HANGAR_BROWSER", "1") != "0":
+        try:
+            from hangar.apps import browser_host
+            if browser_host.available():
+                browser_port = browser_host.prepare()
+                from PySide6.QtWebEngineQuick import QtWebEngineQuick
+                QtWebEngineQuick.initialize()          # before the app: your tabs are native QML web views
+        except ImportError:
+            browser_port = None
+    background = "--background" in sys.argv
     app = common.make_app("spaces")
     sock = QLocalSocket()
     sock.connectToServer(SOCKET)
@@ -602,8 +856,14 @@ def main() -> None:
     QLocalServer.removeServer(SOCKET)
     server = QLocalServer()
     server.listen(SOCKET)
+    host = None
+    if browser_port:
+        from hangar.apps.browser_host import BrowserHost
+        host = BrowserHost(browser_port)
+        TabPicture.host = host
     qmlRegisterType(LiveDesktop, "Hangar", 1, 0, "LiveDesktop")
     qmlRegisterType(Picture, "Hangar", 1, 0, "Picture")
+    qmlRegisterType(TabPicture, "Hangar", 1, 0, "TabPicture")
     from PySide6.QtQuickControls2 import QQuickStyle
     QQuickStyle.setStyle("Basic")          # Hangar draws its own controls
     engine = QQmlApplicationEngine()
@@ -612,13 +872,27 @@ def main() -> None:
     engine.addImageProvider("thumbs", thumbs)
     bridge = Bridge(thumbs)
     engine.rootContext().setContextProperty("hangar", bridge)
+    from hangar.apps.notes import Notes
+    notes = Notes()
+    engine.rootContext().setContextProperty("notes", notes)
+    browser = BrowserBridge(host)
+    engine.rootContext().setContextProperty("browser", browser)
     engine.addImportPath(str(QML))
     engine.load(QUrl.fromLocalFile(str(QML / "Home.qml")))
     if not engine.rootObjects():
         sys.exit("couldn't load the Hangar interface")
     win = engine.rootObjects()[0]
+    common.mac_window(win)
+    if background:                      # started for the browser (by the daemon): no window yet
+        win.hide()
+    if host:
+        # Agents' tabs live in this process: closing the window keeps them going.
+        app.setQuitOnLastWindowClosed(False)
+        app.aboutToQuit.connect(host.close)
 
     def handle(msg: str) -> None:
+        if msg == "background":
+            return
         win.show()
         win.raise_()
         win.requestActivate()
@@ -628,16 +902,29 @@ def main() -> None:
             bridge.select(msg[6:])
         elif msg == "overview":
             bridge.overviewRequested.emit()
+        elif msg.startswith("note:"):
+            bridge.showView("notes")
+            notes.open(msg[5:])
+        elif msg.startswith("view:"):
+            view, _, section = msg[5:].partition("/")
+            bridge.showView(view, section)
 
     def incoming() -> None:
         conn = server.nextPendingConnection()
         conn.waitForReadyRead(1000)
         handle(bytes(conn.readAll()).decode())
     server.newConnection.connect(incoming)
-    QTimer.singleShot(200, lambda: handle(want) if want != "show" else None)
+    QTimer.singleShot(200, lambda: handle(want) if want not in ("show", "background") else None)
     code = app.exec()
     del engine          # before the bridge it reads from goes away
     sys.exit(code)
+
+
+def open_view(view: str, *extra: str) -> None:
+    """Notes, Passwords and Settings are views in Hangar's window: their launchers
+    (and `hangar open notes`, …) open it there."""
+    sys.argv = [sys.argv[0], "--view", view, *extra]
+    main()
 
 
 if __name__ == "__main__":

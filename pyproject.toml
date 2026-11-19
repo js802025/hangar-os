@@ -23,6 +23,10 @@ hangar-app = "hangar.apps.launch:main"
 apps = [
     "pyside6-essentials>=6.8",
 ]
+browser = [               # the in-app browser (QtWebEngine) agents use instead of a desktop
+    "pyside6-essentials>=6.8",
+    "pyside6-webengine>=6.12.0.140",   # Qt for Python's QtWebEngine wheel (separate since 6.12)
+]
 voice = [
     "faster-whisper>=1.1",
     "numpy>=2",

@@ -168,6 +168,15 @@ def _open_home(thread: str) -> None:
 
 
 def main() -> None:
+    """Notes opens in Hangar's window (`--standalone` for a window of its own)."""
+    if "--standalone" not in sys.argv:
+        from hangar.apps import home
+        if "--note" in sys.argv:
+            sys.argv = [sys.argv[0], "--note", sys.argv[sys.argv.index("--note") + 1]]
+            home.main()
+        else:
+            home.open_view("notes")
+        return
     app = common.make_app("notes")
     from PySide6.QtQuickControls2 import QQuickStyle
     QQuickStyle.setStyle("Basic")          # Hangar draws its own controls

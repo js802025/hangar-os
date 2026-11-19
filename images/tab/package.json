@@ -1,0 +1,10 @@
+{
+  "name": "hangar-tab",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Agents' Playwright session for Hangar's in-app browser (driven by the tab_* MCP tools)",
+  "type": "module",
+  "dependencies": {
+    "playwright-core": "1.56.1"
+  }
+}

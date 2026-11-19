@@ -18,7 +18,7 @@ Rectangle {
 
         RowLayout {
             Layout.fillWidth: true
-            Layout.topMargin: 4
+            Layout.topMargin: 4 + Theme.chromeTop     // below the window buttons on macOS
             spacing: 10
             Canvas {   // the Hangar mark
                 width: 26; height: 26
@@ -115,15 +115,28 @@ Rectangle {
             }
         }
 
-        // -- apps --------------------------------------------------------------------------
-        Rectangle { Layout.fillWidth: true; height: 1; color: Theme.line }
-        RowLayout {
+        // -- your apps, in this window --------------------------------------------------------
+        Rectangle { Layout.fillWidth: true; height: 1; color: Theme.line; opacity: 0.7 }
+        ColumnLayout {
             Layout.fillWidth: true
-            spacing: 6
+            spacing: 1
             Repeater {
-                model: [["📝", "Notes", "notes"], ["🔑", "Passwords", "passwords"], ["⚙", "Settings", "settings"]]
-                HButton { Layout.fillWidth: true; icon: modelData[0]; text: modelData[1]; kind: "ghost"
-                          onClicked: hangar.openApp(modelData[2]) }
+                model: [["◎", "Browser", "browser"], ["✎", "Notes", "notes"], ["⚿", "Passwords", "passwords"],
+                        ["⚙", "Settings", "settings"]]
+                Rectangle {
+                    Layout.fillWidth: true; height: 32; radius: Theme.r1
+                    property bool on: hangar.view === modelData[2]
+                    color: on ? Theme.raised : nma.containsMouse ? Theme.panel : "transparent"
+                    RowLayout {
+                        anchors.fill: parent; anchors.leftMargin: 10; spacing: 10
+                        Text { text: modelData[0]; color: parent.parent.on ? Theme.accent : Theme.faint; font.pixelSize: 13
+                               Layout.preferredWidth: 16; horizontalAlignment: Text.AlignHCenter }
+                        Text { text: modelData[1]; color: parent.parent.on ? Theme.text : Theme.dim
+                               font.pixelSize: Theme.fs - 1; font.weight: Font.Medium; Layout.fillWidth: true }
+                    }
+                    MouseArea { id: nma; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                                onClicked: hangar.showView(parent.on ? "chat" : modelData[2]) }
+                }
             }
         }
     }

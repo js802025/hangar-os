@@ -9,6 +9,9 @@ Admin routes (admin token):
   DELETE /api/vault/entries/{id}
   DELETE /api/vault/grants/{agent}/{entry}
   POST   /api/vault/requests/{id}/approve        {"entry", "scope": once|hour|always, "code"}
+                                                 or {"login": {"username", "password"}}: a login
+                                                 you supply once (Hangar for Mac fills it from
+                                                 Apple Passwords); used for this fill, never stored
   POST   /api/vault/requests/{id}/deny
 """
 
@@ -71,14 +74,18 @@ def routes(eng: Engine, hub, log) -> list[Route]:
             if r.status == "pending" and time.time() - r.created > EXPIRE:
                 r.set("expired", "Nobody answered the request in time. Report waiting_on_user if you still need it.")
 
-    async def do_fill(r: Req, entry_id: str, code: str = "", how: str = "approved") -> None:
-        """Type the secret into the agent's browser via its own (token-locked) port."""
+    async def do_fill(r: Req, entry_id: str, code: str = "", how: str = "approved",
+                      given: dict | None = None) -> None:
+        """Type the secret into the agent's browser via its own (token-locked) port.
+        `given` is a login the user supplied for this one fill; it isn't kept."""
         try:
             e = await run_in_threadpool(vault.get, entry_id) if entry_id else None
             if e and normalize_site(r.site) != e["site"] and not normalize_site(r.site).endswith("." + e["site"]):
                 raise RuntimeError("that login is for a different site")
             payload = {"site": e["site"] if e else r.site, "agent": r.who}
-            if r.kind == "login":
+            if r.kind == "login" and given:
+                payload |= {"username": given.get("username", ""), "password": given.get("password", "")}
+            elif r.kind == "login":
                 if not e:
                     raise RuntimeError("no login chosen")
                 payload |= {"username": e.get("username", ""), "password": e.get("password", "")}
@@ -96,7 +103,8 @@ def routes(eng: Engine, hub, log) -> list[Route]:
             what = " and ".join(res["filled"])
             more = (" The password field wasn't on this page: continue to the next step and call "
                     "request_login again.") if r.kind == "login" and "password" not in res["filled"] else ""
-            r.set("filled", f"Filled the {what} on {res['page']} ({e['label'] if e else 'code from the user'}). "
+            src = e["label"] if e else ("a login from the user" if given else "code from the user")
+            r.set("filled", f"Filled the {what} on {res['page']} ({src}). "
                             f"Now continue (e.g. click the sign-in or verify button).{more}")
             audit("filled", agent=r.agent, kind=r.kind, site=r.site, entry=e["label"] if e else "", how=how,
                   fields=res["filled"])
@@ -235,6 +243,18 @@ def routes(eng: Engine, hub, log) -> list[Route]:
         entry, scope, code = str(b.get("entry", "")), b.get("scope", "once"), str(b.get("code", "")).strip()
         if scope not in SCOPES:
             return err(f"scope: {' | '.join(SCOPES)}")
+        given = b.get("login")
+        if given is not None:          # a login the user supplied once (e.g. from Apple Passwords)
+            if r.kind != "login":
+                return err("a login only answers a sign-in request; send a code for this one")
+            if not isinstance(given, dict) or not str(given.get("password", "")):
+                return err("login needs a username and a password")
+            given = {"username": str(given.get("username", ""))[:500], "password": str(given["password"])[:1000]}
+            audit("approved", agent=r.agent, kind=r.kind, site=r.site, scope="once", entry="one-time login from the user")
+            r.status = "approved"
+            publish(r)
+            await do_fill(r, "", how="one-time login", given=given)
+            return JSONResponse(r.public())
         candidates = {e["id"]: e for e in await run_in_threadpool(vault.match, r.site)}
         if entry and entry not in candidates:
             return err("that login isn't for this site")

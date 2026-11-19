@@ -452,6 +452,35 @@ APP_INFO = {
 }
 
 
+def mac_window(win) -> None:
+    """macOS: no title bar, like most Mac apps: the content runs to the top and
+    only the three window buttons sit over it (QML leaves Theme.chromeTop free).
+    Sets the NSWindow's full-size content view through the Objective-C runtime."""
+    if sys.platform != "darwin":
+        return
+    import ctypes
+    import ctypes.util
+    objc = ctypes.cdll.LoadLibrary(ctypes.util.find_library("objc"))
+    objc.objc_getClass.restype = objc.sel_registerName.restype = ctypes.c_void_p
+    objc.objc_getClass.argtypes = objc.sel_registerName.argtypes = [ctypes.c_char_p]
+
+    def send(obj, sel, *args, ret=ctypes.c_void_p, types=()):
+        f = ctypes.CFUNCTYPE(ret, ctypes.c_void_p, ctypes.c_void_p, *types)(("objc_msgSend", objc))
+        return f(obj, objc.sel_registerName(sel.encode()), *args)
+    view = ctypes.c_void_p(int(win.winId()))                     # Qt's NSView
+    nswin = send(view, "window")
+    if not nswin:
+        return
+    mask = send(nswin, "styleMask", ret=ctypes.c_ulong)
+    send(nswin, "setStyleMask:", ctypes.c_ulong(mask | (1 << 15)), ret=None, types=(ctypes.c_ulong,))  # FullSizeContentView
+    send(nswin, "setTitlebarAppearsTransparent:", ctypes.c_bool(True), ret=None, types=(ctypes.c_bool,))
+    send(nswin, "setTitleVisibility:", ctypes.c_long(1), ret=None, types=(ctypes.c_long,))              # hidden
+    # Qt lays its view out again once the window's size changes: nudge it.
+    w, h = win.width(), win.height()
+    win.resize(w, h + 1)
+    win.resize(w, h)
+
+
 def make_app(name: str) -> QApplication:
     """QApplication with Hangar's look. The desktop file name doubles as the
     Wayland app id, so each app gets its own taskbar entry on the OS."""
@@ -460,7 +489,8 @@ def make_app(name: str) -> QApplication:
     app = QApplication.instance() or QApplication(sys.argv)
     app.setApplicationName(title)
     app.setDesktopFileName(f"dev.hangar.{name}")
-    app.setWindowIcon(app_icon(letter, color))
+    if not (sys.platform == "darwin" and ".app/Contents/MacOS/" in sys.executable):
+        app.setWindowIcon(app_icon(letter, color))      # on a Mac, Hangar.app's icon is the Dock icon
     app.setStyle("Fusion")
     app.setStyleSheet(QSS)
     if not daemonctl.ensure_daemon():

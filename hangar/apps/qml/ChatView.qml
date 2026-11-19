@@ -24,9 +24,12 @@ Rectangle {
                 Text { text: chat.t.title || "New chat"; color: Theme.text; font.pixelSize: Theme.fsTitle
                        font.weight: Font.DemiBold; elide: Text.ElideRight; Layout.fillWidth: true }
                 Rectangle {
-                    radius: 11; height: 24; width: pl.implicitWidth + 18; color: Theme.raised
-                    Text { id: pl; anchors.centerIn: parent; color: Theme.dim; font.pixelSize: 12
+                    radius: 11; height: 24; width: pl.implicitWidth + 18
+                    color: pcm.containsMouse ? Theme.hover : Theme.raised
+                    Text { id: pl; anchors.centerIn: parent; color: hangar.pilot ? Theme.dim : Theme.yellow; font.pixelSize: 12
                            text: "✦ Pilot · " + (hangar.pilot || "not set up") }
+                    MouseArea { id: pcm; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                                onClicked: hangar.showView("settings", hangar.pilot ? "pilot" : "accounts") }
                 }
             }
             Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: Theme.line; opacity: 0.6 }
@@ -64,6 +67,11 @@ Rectangle {
                 Text { text: "✦"; color: Theme.accent; font.pixelSize: 40; Layout.alignment: Qt.AlignHCenter }
                 Text { text: "What should your crew work on?"; color: Theme.text; font.pixelSize: Theme.fsHero
                        font.weight: Font.DemiBold; Layout.alignment: Qt.AlignHCenter }
+                HButton {
+                    visible: !hangar.pilot; Layout.alignment: Qt.AlignHCenter
+                    kind: "primary"; icon: "✦"; text: "Connect Claude Code to get started"
+                    onClicked: hangar.showView("settings", "accounts")
+                }
                 Text { text: "Your pilot answers, or starts agents on their own desktops and keeps you posted."
                        color: Theme.dim; font.pixelSize: 15; wrapMode: Text.WordWrap; horizontalAlignment: Text.AlignHCenter
                        Layout.fillWidth: true }

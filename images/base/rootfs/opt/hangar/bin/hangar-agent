@@ -31,15 +31,17 @@ for _ in $(seq 1 60); do curl -fsS -m 1 http://127.0.0.1:8765/healthz >/dev/null
 SYS="You are $ME, an agent running inside Hangar on a private Linux computer (a container with
 a desktop; nothing you do touches the user's screen). Files go in /home/agent/workspace.
 Do the work the cheapest reliable way, in this order:
-1. Commands and files: your own shell and file tools (or the hangar run_command, read_file,
-   write_file tools), for data, downloads, scripts and documents. Write files by command,
-   never by typing into an editor.
-2. The web without a browser: your own web search / fetch tools (or hangar web_search and
-   web_fetch) to find and read pages and APIs.
-3. Element-based tools when something needs real input: browser_navigate / browser_snapshot /
-   browser_click / browser_type (numbered elements) for sites with forms, sign-ins or pages
-   that only work in a browser; app_snapshot / app_click / app_type for desktop apps.
-4. Computer use (screenshot + click / type) only when nothing above can do it.
+1. Normal work: your own shell and file tools (or the hangar run_command, read_file,
+   write_file tools) for data, downloads, scripts and documents; web search / fetch (yours,
+   or hangar web_search and web_fetch) to find and read pages and APIs. Write files by
+   command, never by typing into an editor.
+2. Browser use, for sites that need input (forms, sign-ins, carts, JavaScript-only pages):
+   Hangar's browser with the hangar tab_* tools (tab_open, tab_read for an accessibility tree
+   with [ref=eN] refs, tab_click / tab_type by ref, tab_run for Playwright code). Its tabs run
+   in the background in this space's own profile; nothing needs a desktop.
+3. Computer use, only for the smallest part nothing above can do: desktop apps by element
+   (app_snapshot / app_click / app_type), the desktop browser (browser_*), and last of all
+   screenshot + click / type.
 Read your 'hangar' skill first: it explains this computer, its tools and its limits.
 Nobody is watching to answer questions: work autonomously.
 ${HANGAR_ROLE:+Your role: $HANGAR_ROLE
@@ -47,15 +49,13 @@ ${HANGAR_ROLE:+Your role: $HANGAR_ROLE
 window is busy (another agent is typing in it), work elsewhere. Use team() to see who's
 here, send_message(to, text) to talk to a teammate or to \"pilot\" (who coordinates
 other spaces), and read_messages() now and then.
-To sign in to a website, open its sign-in page and call the hangar request_login tool
+To sign in to a website, open its sign-in page (in a tab) and call the hangar request_login tool
 (and request_code for verification codes): the user approves and Hangar fills it in.
 Never ask for, guess or type passwords yourself.
 ${HANGAR_COMPUTER:+(Hangar for Mac) Your screen is not this Linux desktop: it is a Mac (macOS VM).
-Steps 1 and 2 still run here in your container. There are no browser or app tools: for
-step 3 and 4, drive the Mac with screenshot / click / type_text / key / scroll, using Mac
-shortcuts (cmd+space to open apps), and only for Mac apps or pages that need input. There is
-no request_login on the Mac: if a site needs signing in, report waiting_on_user and ask the
-user to sign in.
+Steps 1 and 2 work as above. For step 3 there are no desktop browser or app tools: drive the
+Mac with screenshot / click / type_text / key / scroll, using Mac shortcuts (cmd+space to open
+apps), and only for Mac apps. If a site needs signing in on the Mac, report waiting_on_user.
 }Post short progress updates with the hangar report tool, and finish with
 report(message=<summary>, status=\"done\", final=true), or status=\"waiting_on_user\"
 with final=true if you need the user."
@@ -152,9 +152,34 @@ Task: $TASK"
     code=$?
     ;;
   local:*)
-    hangar-local-agent --model "${MODEL#local:}" --system "$SYS
+    if command -v pi >/dev/null; then
+      # pi (pi-mono, the harness Aside's browser agent is built on), on the local model,
+      # with Hangar's tools over MCP.
+      export PI_CODING_AGENT_DIR="$MINE/pi" PI_SKIP_VERSION_CHECK=1 PI_OFFLINE=1
+      mkdir -p "$PI_CODING_AGENT_DIR"
+      LLM="${HANGAR_LLM_URL:-http://hangar-host:1234/v1}"
+      INPUT='["text"]'; [[ "${HANGAR_MODEL_VISION:-0}" == 1 ]] && INPUT='["text","image"]'
+      jq -n --arg url "$LLM" --arg id "${MODEL#local:}" --argjson input "$INPUT" '
+        {providers: {local: {baseUrl: $url, api: "openai-completions", apiKey: "local",
+                             models: [{id: $id, contextWindow: 32768, maxTokens: 8192, input: $input}]}}}' \
+        > "$PI_CODING_AGENT_DIR/models.json"
+      jq -n --arg t "${HANGAR_AGENT_TOKEN:-}" --arg me "$ME" --arg ctl "$CONTROL_URL" --arg c "${HANGAR_PILOT:-}" '
+        {mcpServers: ({hangar: {url: "http://127.0.0.1:8765/mcp", exposure: "direct",
+                                headers: {Authorization: ("Bearer " + $t), "X-Hangar-Agent": $me}}}
+         + (if $c == "1" then {control: {url: $ctl, exposure: "direct",
+                                         headers: {Authorization: ("Bearer " + $t)}}} else {} end))}' \
+        > "$PI_CODING_AGENT_DIR/mcp.json"     # direct: Hangar's tools are called like built-ins
+      chmod 600 "$PI_CODING_AGENT_DIR/mcp.json"
+      CONT=(); [[ "${HANGAR_CONTINUE:-}" == 1 ]] && CONT=(--continue)
+      pi -p --mode json --model "local/${MODEL#local:}" "${CONT[@]}" --no-context-files --no-approve \
+         --session-dir "$PI_CODING_AGENT_DIR/sessions" \
+         --append-system-prompt "$SYS" --append-system-prompt "$(skill_text)" "$TASK"
+      code=$?
+    else
+      hangar-local-agent --model "${MODEL#local:}" --system "$SYS
 $(skill_text)" "$TASK"
-    code=$?
+      code=$?
+    fi
     ;;
   *)
     hangar-report error "Unknown model '$MODEL'. Use claude, codex or local:<model>."
