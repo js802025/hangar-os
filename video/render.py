@@ -30,8 +30,8 @@ SCENES = [
      "Hangar hands it to a crew of AI agents that use one, just like you do.", 0),
     ("ask", 10.5, "Hand it off the moment you think of it",
      "One shortcut, from anywhere on your computer. Type it or say it.", 12),
-    ("plan", 9.0, "A crew takes it from there",
-     "Your pilot splits the job and matches each part to the most efficient model that can handle it.", 6.56),
+    ("plan", 10.5, "A crew takes it from there",
+     "Your pilot splits the job into parts and puts an agent on each, with a computer of its own.", 6.56),
     ("space", 12.5, "They work the way you do",
      "Real websites, real apps, real files. If you can do it on a computer, so can they.", 6.31),
     ("overview", 5.0, "Many jobs at once",
@@ -47,6 +47,10 @@ SCENES = [
     ("outro", 5.0, "", "", 0),
 ]
 CARDS = {"why", "private"}
+# Scenes that tell two things: (seconds into the scene, title, detail) for the second caption.
+SECOND_CAPTION = {"plan": (4.6, "The right model for every job",
+                           "Routine work runs on a small model on your PC, free and private. "
+                           "Only the parts that need more go to a bigger model.")}
 SAME_WINDOW = {"plan", "space", "overview", "approve", "takeover", "review", "answer"}
 # The pilot hands each agent its own job as the space scene opens (seconds into the scene).
 ASSIGN = {"space": (0.8, 4.4, [("#7c9cff", "bikes", "Search PedalSwap for 56 cm road bikes under $500",
@@ -366,7 +370,12 @@ def main() -> None:
                 a0, a1, rows = ASSIGN[s.name]
                 draw_assign(p, rows, min(ease((lt - a0) / 0.35), ease((a1 - lt) / 0.35)))
             if s.name not in CARDS:
-                draw_caption(p, s.title, s.detail, ta)
+                if s.name in SECOND_CAPTION:
+                    t2, title2, detail2 = SECOND_CAPTION[s.name]
+                    draw_caption(p, s.title, s.detail, min(ta, ease((t2 - 0.25 - lt) / 0.3)))
+                    draw_caption(p, title2, detail2, min(ta, ease((lt - t2) / 0.4)) if lt > t2 else 0)
+                else:
+                    draw_caption(p, s.title, s.detail, ta)
         p.end()
         ff.stdin.write(frame.constBits().tobytes())
         if f % (FPS * 5) == 0:
