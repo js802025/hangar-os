@@ -28,19 +28,19 @@ SCENES = [
     ("title", 4.0, "", "", 0),
     ("why", 5.0, "Most of your to-do list happens on a computer.",
      "Hangar hands it to a crew of AI agents that use one, just like you do.", 0),
-    ("ask", 8.0, "Hand it off the moment you think of it",
-     "One shortcut, from anywhere on your computer. Type it or say it.", 5.5),
-    ("plan", 8.0, "A crew takes it from there",
-     "Your pilot breaks the job down and puts agents on it, each with a computer of its own.", 12),
+    ("ask", 10.5, "Hand it off the moment you think of it",
+     "One shortcut, from anywhere on your computer. Type it or say it.", 12),
+    ("plan", 9.0, "A crew takes it from there",
+     "Your pilot splits the job and matches each part to the most efficient model that can handle it.", 6.56),
     ("space", 12.5, "They work the way you do",
-     "Real websites, real apps, real files. If you can do it on a computer, so can they.", 12),
+     "Real websites, real apps, real files. If you can do it on a computer, so can they.", 6.31),
     ("overview", 5.0, "Many jobs at once",
-     "Shopping, email, code, travel, paperwork: all moving while you get on with your day.", 6),
+     "Shopping, email, code, travel, paperwork: all moving while you get on with your day.", 4.20),
     ("approve", 4.5, "Your accounts stay yours",
-     "Agents ask before they sign in anywhere, and never see a password.", 6),
+     "Agents ask before they sign in anywhere, and never see a password.", 4.29),
     ("takeover", 4.0, "You're always in charge", "Watch any agent work, step in, and hand it back.", 0),
     ("review", 5.0, "Nothing happens behind your back", "See every change, and undo anything you don't like.", 0),
-    ("answer", 8.0, "Come back to finished work", "One answer, with the work already done.", 12),
+    ("answer", 8.0, "Come back to finished work", "One answer, with the work already done.", 6.53),
     ("notes", 5.0, "It all adds up", "What your crew finds is kept in your notes, for you and for them.", 0),
     ("private", 5.0, "It lives on your computer.",
      "Agents see only the folders you share, and can run on AI models on your own machine.", 0),
@@ -49,8 +49,9 @@ SCENES = [
 CARDS = {"why", "private"}
 SAME_WINDOW = {"plan", "space", "overview", "approve", "takeover", "review", "answer"}
 # The pilot hands each agent its own job as the space scene opens (seconds into the scene).
-ASSIGN = {"space": (0.8, 4.2, [("#7c9cff", "bikes", "Search PedalSwap for 56 cm road bikes under $500 near Boston"),
-                                ("#f472b6", "wren", "Read reviews of the most promising models")])}
+ASSIGN = {"space": (0.8, 4.4, [("#7c9cff", "bikes", "Search PedalSwap for 56 cm road bikes under $500",
+                                 "Qwen3.5 9B · on this PC"),
+                                ("#f472b6", "wren", "Read reviews of the most promising models", "Claude")])}
 SETUP_STEPS = ["setup-0-welcome", "setup-2-accounts", "setup-3-models", "setup-4-pilot", "setup-5-notify",
                "setup-6-done"]
 
@@ -234,7 +235,13 @@ def draw_assign(p: QPainter, rows, a: float) -> None:
     head.setPixelSize(17)
     head.setWeight(QFont.DemiBold)
     p.setFont(mono)
-    w = max(p.fontMetrics().horizontalAdvance(f"{n}  {t}") for _c, n, t in rows) + 110
+    small = QFont("Inter")
+    small.setPixelSize(17)
+    tag_w = 0
+    p.setFont(small)
+    tag_w = max(p.fontMetrics().horizontalAdvance(m) for *_x, m in rows) + 40
+    p.setFont(mono)
+    w = max(p.fontMetrics().horizontalAdvance(f"{n}  {t}") for _c, n, t, _m in rows) + 110 + tag_w
     h = 64 + 46 * len(rows)
     x, y = (W - w) / 2, 250 - 16 * (1 - a)
     p.setPen(Qt.NoPen)
@@ -247,7 +254,7 @@ def draw_assign(p: QPainter, rows, a: float) -> None:
     p.setFont(head)
     p.setPen(QColor("#a7bbff"))
     p.drawText(QRectF(x + 28, y + 16, w - 56, 26), Qt.AlignLeft | Qt.AlignVCenter, "✦  Pilot → crew")
-    for i, (color, name, task) in enumerate(rows):
+    for i, (color, name, task, model) in enumerate(rows):
         ry = y + 54 + 46 * i
         p.setPen(Qt.NoPen)
         p.setBrush(QColor(color))
@@ -257,7 +264,14 @@ def draw_assign(p: QPainter, rows, a: float) -> None:
         nw = p.fontMetrics().horizontalAdvance(name + "  ")
         p.drawText(QRectF(x + 56, ry, nw + 10, 38), Qt.AlignLeft | Qt.AlignVCenter, name)
         p.setPen(QColor("#e8eaf0"))
-        p.drawText(QRectF(x + 56 + nw, ry, w - nw - 80, 38), Qt.AlignLeft | Qt.AlignVCenter, task)
+        p.drawText(QRectF(x + 56 + nw, ry, w - nw - 80 - tag_w, 38), Qt.AlignLeft | Qt.AlignVCenter, task)
+        p.setFont(small)
+        tw = p.fontMetrics().horizontalAdvance(model) + 22
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(255, 255, 255, 16))
+        p.drawRoundedRect(QRectF(x + w - 28 - tw, ry + 6, tw, 26), 13, 13)
+        p.setPen(QColor("#a9b4cc"))
+        p.drawText(QRectF(x + w - 28 - tw, ry + 6, tw, 26), Qt.AlignCenter, model)
     p.restore()
 
 

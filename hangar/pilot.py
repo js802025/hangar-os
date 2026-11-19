@@ -64,6 +64,36 @@ def allowed(model: str, account: str = "") -> bool:
     return False
 
 
+CLOUD = {   # harness: (what it is, relative cost)
+    "claude": ("Claude (cloud, via Claude Code): strongest at judgement, writing, code and long multi-step work",
+               "uses the account's subscription or API credits"),
+    "codex": ("GPT (cloud, via Codex): strong at code and multi-step work",
+              "uses the account's subscription or API credits"),
+}
+
+
+def describe(model: str) -> dict:
+    """What a model is good for and what it costs to run, so the pilot can pick the
+    most efficient model that can still do a job. cost: 0 = free and on this PC."""
+    from hangar import catalog
+    h, _, sub = model.partition(":")
+    if h == "local":
+        m = next((c for c in catalog.MODELS if c["key"] == sub), None)
+        if m:
+            size = m["params"]
+            can = ["tools"] + (["sees the screen"] if m["vision"] else ["text only: browser text tools, no screenshots"]) \
+                + (["reasoning"] if m.get("reasoning") else [])
+            gb = m["min_gb"]
+            return {"model": model, "where": "local", "cost": 0 if gb < 10 else 1,
+                    "summary": f"{m['name']} ({size}, on this PC: free and private): {', '.join(can)}. {m['blurb']}"}
+        return {"model": model, "where": "local", "cost": 0,
+                "summary": f"{sub} (on this PC: free and private; check it supports tools and vision)"}
+    what, cost = CLOUD.get(h, (model, "uses the account's credits"))
+    if sub:
+        what += f"; model {sub}"
+    return {"model": model, "where": "cloud", "cost": 2, "summary": f"{what}. Costs: {cost}."}
+
+
 def step(text: str, space: str = "") -> None:
     """Record what the pilot did in its current conversation."""
     from hangar import threads
@@ -72,6 +102,16 @@ def step(text: str, space: str = "") -> None:
         threads.add(tid, "step", text, space=space)
         if space:
             threads.link_space(space, tid)
+
+
+def short_model(model: str) -> str:
+    """A model's everyday name for the chat, e.g. "Qwen3.5 9B (local)" or "Claude"."""
+    from hangar import catalog
+    h, _, sub = model.partition(":")
+    if h == "local":
+        m = next((c for c in catalog.MODELS if c["key"] == sub), None)
+        return f"{m['name'] if m else sub} (local)"
+    return {"claude": "Claude", "codex": "GPT"}.get(h, h) + (f" {sub}" if sub else "")
 
 
 def build(eng: Engine, bus: Bus) -> FastMCP:
@@ -100,11 +140,20 @@ def build(eng: Engine, bus: Bus) -> FastMCP:
 
     @mcp.tool()
     async def models() -> str:
-        """Which models you may give agents, your limits, and how many of your agents run now."""
+        """Which models you may give agents (cheapest first, with what each is good at),
+        your limits, and how many of your agents run now. Give each agent the most
+        efficient model that can do its task."""
         o = load()
         n = await run_in_threadpool(running_agents)
-        lines = [f"- {a['model']}" + (f" (account {a['account']})" if a["account"] else "") for a in o["allowed"]]
-        return ("Models you may use:\n" + ("\n".join(lines) or "- none: ask the user to allow some in Settings")
+        allowed_ = sorted(o["allowed"], key=lambda a: describe(a["model"])["cost"])
+        lines = [f"- {a['model']}" + (f" (account {a['account']})" if a["account"] else "")
+                 + f": {describe(a['model'])['summary']}" for a in allowed_]
+        return ("Models you may use, cheapest first:\n"
+                + ("\n".join(lines) or "- none: ask the user to allow some in Settings")
+                + "\nChoose per agent: the cheapest model that can reliably do that agent's task. Routine "
+                  "browsing, reading, searching and filling in forms suit small local models (free, private); "
+                  "use a model that sees the screen when the work is visual; save cloud models for judgement, "
+                  "writing, code and long multi-step work."
                 + f"\nMax agents running at once: {o['max_agents']} (now: {n})"
                 + f"\nNew spaces' internet: {o['internet']}")
 
@@ -166,7 +215,8 @@ def build(eng: Engine, bus: Bus) -> FastMCP:
                     eng.run_task(name, ag["task"], agent=nm, snapshot=False)
             return names
         names = await run_in_threadpool(make)
-        step(f"Started space {name} with {', '.join(names)}", name)
+        who = ", ".join(f"{nm} on {short_model(ag['model'])}" for nm, ag in zip(names, agents))
+        step(f"Started space {name}: {who}", name)
         return f"Created space {name} with {', '.join(names)}."
 
     @mcp.tool()
@@ -185,7 +235,7 @@ def build(eng: Engine, bus: Bus) -> FastMCP:
                 eng.run_task(space, task, agent=e["name"], snapshot=False)
             return e["name"]
         added = await run_in_threadpool(go)
-        step(f"Added {added} to {space}" + (f": {task[:120]}" if task else ""), space)
+        step(f"Added {added} to {space} on {short_model(model)}" + (f": {task[:120]}" if task else ""), space)
         return f"Added {added} to {space}."
 
     @mcp.tool()

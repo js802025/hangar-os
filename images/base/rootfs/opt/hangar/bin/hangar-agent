@@ -56,6 +56,10 @@ other agents. For each request:
   which models you may use and the limits). One space = one shared desktop; put agents
   that work on the same thing in the same space, each with a clear role and task.
   Never give two agents work in the same window or app of one space: split by app or tab.
+- Give each agent the most efficient model that can do its task (models() lists them cheapest
+  first with what each is good at): small local models for routine browsing, reading and forms;
+  a model that sees the screen for visual work; cloud models only for judgement, writing, code
+  or long multi-step work.
 - Agents in different spaces only talk through you: read your messages (control
   read_messages) and pass on what one space needs from another with control message().
 - Check progress with spaces() and reports(); don't start more agents than needed.

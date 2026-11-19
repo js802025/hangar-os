@@ -211,6 +211,13 @@ Orchestration** (or `hangar pilot set`):
 uv run hangar pilot set claude --allow local:qwen/qwen3.5-9b --allow claude@personal --max-agents 4
 ```
 
+**Picking models.** The control tool `models()` lists the allowed models
+cheapest first, each with what it can do (sees the screen, reasoning, size,
+local or cloud) and what it costs to run, and the pilot is told to give each
+agent the cheapest model that can reliably do that agent's task. The chat
+records the choice ("Started space bikes: bikes on Qwen3.5 9B (local), wren
+on Claude").
+
 What it can't do, enforced by the daemon rather than just asked:
 - use a model you haven't allowed,
 - run more agents than your limit,

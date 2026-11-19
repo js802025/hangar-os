@@ -213,13 +213,14 @@ Rectangle {
         id: stepMsg
         Item {
             width: parent ? parent.width : 0
-            height: 24
-            Row {
-                x: 44; spacing: 8; anchors.verticalCenter: parent.verticalCenter
-                Text { text: it.kind === "step" ? "▸" : "·"; color: it.kind === "step" ? Theme.accent : Theme.faint
-                       font.pixelSize: 13 }
-                Text { text: it.text; color: it.kind === "step" ? Theme.dim : Theme.faint; font.pixelSize: 13
-                       elide: Text.ElideRight; width: Math.min(implicitWidth, 640) }
+            height: Math.max(24, st.implicitHeight + 6)
+            Text { id: mark; x: 44; y: 3; text: it.kind === "step" ? "▸" : "·"
+                   color: it.kind === "step" ? Theme.accent : Theme.faint; font.pixelSize: 13 }
+            Text {
+                id: st
+                x: 60; y: 3; width: Math.min(parent.width - 60, 680)
+                text: it.text; wrapMode: Text.WordWrap
+                color: it.kind === "step" ? Theme.dim : Theme.faint; font.pixelSize: 13
             }
             MouseArea { anchors.fill: parent; enabled: !!it.space; cursorShape: Qt.PointingHandCursor
                         onClicked: hangar.select(it.space) }

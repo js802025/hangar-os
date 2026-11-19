@@ -31,3 +31,9 @@ models (20B+) do much better if your PC can hold them.
 
 In [Settings](Settings) → Orchestration, choose the pilot's model and the
 models it may give agents. The pilot can't use anything you haven't allowed.
+
+Within what you allow, the pilot gives each agent the most efficient model
+that can do its task: small local models for routine work, a model that sees
+the screen for visual work, and cloud models only for judgement, writing,
+code or long multi-step jobs. Allowing a couple of local models alongside a
+cloud account keeps most work free and on the PC.

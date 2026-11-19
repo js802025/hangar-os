@@ -429,6 +429,14 @@ def markdown_html(text: str, link: str = "#7c9cff") -> str:
     doc.setMarkdown(text)
     html = re.sub(r"<body[^>]*>", "<body>", doc.toHtml())          # the QML item sets the font
     html = re.sub(r'(<a [^>]*><span style=")[^"]*', rf"\1color:{link}; text-decoration:none;", html)
+    # Tables: Qt's ruled grid draws its lines out of step with the text, so use
+    # padded rows under a dim bold header instead of borders.
+    html = re.sub(r"<table[^>]*>", '<table border="0" cellspacing="0" cellpadding="7">', html)
+
+    def header(m: "re.Match") -> str:
+        return re.sub(r"(<p[^>]*>)(.*?)</p>", r'\1<span style="font-weight:600; color:#8b93a7;">\2</span></p>',
+                      m.group(0), flags=re.S)
+    html = re.sub(r"<tr>.*?</tr>", header, html, count=1, flags=re.S)
     return html
 
 

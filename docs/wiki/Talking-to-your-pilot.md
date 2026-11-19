@@ -51,6 +51,15 @@ When the pilot finishes, you get a notification; **click it to open that
 conversation**. If you set up ntfy, Slack or Telegram, the same reaches your
 phone. See [From another device](From-another-device).
 
+## Choosing models
+
+For each agent, the pilot picks **the most efficient model that can do that
+part of the job**, from the models you've allowed. Routine browsing,
+reading, searching and filling in forms go to small models running on the PC
+(free and private); work that needs to see the screen gets a model with
+vision; judgement, writing, code and long multi-step work get a bigger cloud
+model like Claude. The conversation shows which model each agent got and why.
+
 ## Good to know
 
 - The pilot can only use the models you've allowed and run as many agents as

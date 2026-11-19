@@ -48,7 +48,9 @@ DAEMON = "http://127.0.0.1:7810"
 ASK = ("Find me a used road bike under $500 near Boston, 56 cm frame. "
        "Shortlist the best three and message the top seller about a test ride.")
 PLAN = [
-    ("step", "Started a space for it: bikes, with two researchers", {"space": "bikes"}),
+    ("step", "Searching listings is routine, so it goes to a small model on this PC; judging reviews "
+             "needs more, so that goes to Claude", {}),
+    ("step", "Started space bikes: bikes on Qwen3.5 9B (local), wren on Claude", {"space": "bikes"}),
     ("step", "bikes is searching PedalSwap for road bikes under $500", {"space": "bikes"}),
     ("step", "wren is reading reviews of the most promising models", {"space": "bikes"}),
     ("progress", "12 listings under $500 within 15 miles; 5 in a 56 cm frame", {}),
@@ -172,13 +174,13 @@ def setup_demo() -> None:
     for n in SPACES:
         eng.wait_ready(n, timeout=180)
     spaces.add_agent(eng, "bikes", role="reviews")         # -> wren
-    for n, role, model in (("bikes", "researcher", "claude"), ("inbox", "assistant", "codex"),
+    for n, role, model in (("bikes", "listings", "local:qwen/qwen3.5-9b"), ("inbox", "assistant", "codex"),
                            ("coder", "reviewer", "claude"), ("trip", "planner", "claude"),
                            ("expenses", "bookkeeper", "local:qwen/qwen3.5-9b")):
         r = spaces.roster(eng, n)
         r[0]["role"], r[0]["model"] = role, model
         if n == "bikes":
-            r[1]["model"] = "local:qwen/qwen3.5-9b"
+            r[1]["model"] = "claude"
         spaces.save(n, r)
     set_task("bikes", "bikes", "Find used road bikes under $500 near Boston, 56 cm")
     set_task("bikes", "wren", "Read reviews of the most promising models")
@@ -273,7 +275,7 @@ def os_desktop(w: int, h: int):
 
 def main() -> None:
     from PySide6.QtCore import QPoint, QUrl
-    from PySide6.QtGui import QImage, QPainter
+    from PySide6.QtGui import QPainter
     from PySide6.QtQml import QQmlApplicationEngine, qmlRegisterType
     from PySide6.QtQuickControls2 import QQuickStyle
 
@@ -289,29 +291,41 @@ def main() -> None:
         eng.exec("bikes", ["bash", "-c", "cd ~/workspace && printf 'Look at: PedalSwap, Craigslist\\n' > todo.txt"])
         snapshots.take(eng, "bikes", "before: find a used road bike")
 
-        # 1. Ask from anywhere: the Hangar OS desktop, then the Ask panel (Meta+Space).
+        # 1. Ask from anywhere: the Hangar OS desktop, then the Ask panel (Meta+Space),
+        # typed at a natural pace. Frames follow a fixed 12 fps timeline, not the clock.
+        import random
+        from PySide6.QtGui import QTextCursor
         from hangar.apps.ask import AskPanel
         p = AskPanel()
         p.open(None, {}, set())
+        p.input.setFocus()
         pump(0.3)
         desk = os_desktop(1600, 1000)
-
-        def over_screen() -> QImage:
+        rnd = random.Random(7)
+        times, t = [], 1.9
+        for ch in ASK:                      # when each character lands
+            t += 0.038 + rnd.random() * 0.03 + (0.09 if ch == " " and rnd.random() < 0.25 else 0) \
+                + (0.22 if ch in ",." else 0)
+            times.append(t)
+        d = _dir("ask")
+        for n in range(int((times[-1] + 1.0) * 12)):
+            now = n / 12
             img = desk.copy()
-            if typed["shown"]:
+            if now > 1.3:
+                typed = sum(1 for x in times if x <= now)
+                if p.input.toPlainText() != ASK[:typed]:
+                    p.input.setPlainText(ASK[:typed])
+                    c = p.input.textCursor()
+                    c.movePosition(QTextCursor.End)
+                    p.input.setTextCursor(c)
+                    pump(0.01)
                 panel = p.grab().toImage()
                 q = QPainter(img)
                 q.drawImage(QPoint((img.width() - panel.width()) // 2, 230), panel)
                 q.end()
-            return img
-        typed = {"i": 0, "shown": False}
-
-        def type_more(t: float) -> None:
-            typed["shown"] = t > 1.3
-            if t > 1.9:
-                typed["i"] = min(len(ASK), typed["i"] + 4)
-                p.input.setPlainText(ASK[:typed["i"]])
-        record("ask", over_screen, 8.5, every=1 / 12, script=type_more)
+            img.save(str(d / f"{n:04d}.png"))
+        print(f"  ask: {n + 1} frames")
+        p.hide()
 
         # Your desktop's Hangar: the conversation with the pilot.
         QQuickStyle.setStyle("Basic")
@@ -355,7 +369,7 @@ def main() -> None:
                 shown["n"] += 1
                 bridge.refresh()
                 bridge.openThread(chat["id"])
-        record("plan", win.grabWindow, 8, script=plan)
+        record("plan", win.grabWindow, 9, script=plan)
 
         # 3. Watch them work: each agent gets its own task and starts from a bare desktop.
         bridge.select("bikes")

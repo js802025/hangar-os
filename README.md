@@ -36,7 +36,7 @@ taskbar, the shortcuts and the notifications.
 <td width="50%"><img src="docs/images/ask.png" alt="Asking Hangar from the desktop"><br>
 <b>Hand it off the moment you think of it.</b> One shortcut from anywhere on the system, with a screenshot or the window you're in attached if you like. Type or speak.</td>
 <td width="50%"><img src="docs/images/plan.png" alt="The pilot starting a crew"><br>
-<b>A crew takes it from there.</b> The pilot breaks the job down, starts agents with the right roles, and keeps you posted in one conversation.</td>
+<b>A crew takes it from there.</b> The pilot breaks the job down and gives each part the most efficient model that can do it: a small model on the machine for routine browsing, a bigger one only where judgement is needed.</td>
 </tr>
 <tr>
 <td><img src="docs/images/space.png" alt="Two agents working on one desktop"><br>
@@ -87,6 +87,8 @@ their lane:
 - **Sign-ins go through you.** Passwords live in an encrypted vault; agents
   ask, you approve, the OS types it in. AI subscriptions sign in through each
   company's official login, and Hangar never sees those passwords.
+- **No more model than the job needs.** The pilot matches each agent to the cheapest model
+  that can do its part, so routine work stays free and private on the machine.
 - **Limits that are enforced, not requested.** Which models the pilot may
   use, how many agents can run, which websites a space can reach: the system
   enforces these, whatever an agent says.
