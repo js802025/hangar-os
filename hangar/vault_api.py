@@ -34,9 +34,10 @@ EXPIRE = 15 * 60   # unanswered requests lapse after 15 minutes
 
 
 class Req:
-    def __init__(self, agent: str, kind: str, site: str, reason: str) -> None:
+    def __init__(self, agent: str, kind: str, site: str, reason: str, who: str = "") -> None:
         self.id = secrets.token_hex(5)
         self.agent, self.kind, self.site, self.reason = agent, kind, site, reason
+        self.who = who or agent   # which agent in the space asked (its tab gets the fill)
         self.status = "pending"        # pending | approved | filled | denied | failed | expired
         self.message = ""
         self.created = time.time()
@@ -48,7 +49,7 @@ class Req:
         self.changed = asyncio.Event()
 
     def public(self, vault: Vault | None = None) -> dict:
-        d = {"id": self.id, "agent": self.agent, "kind": self.kind, "site": self.site, "reason": self.reason,
+        d = {"id": self.id, "agent": self.agent, "who": self.who, "kind": self.kind, "site": self.site, "reason": self.reason,
              "status": self.status, "message": self.message, "created": self.created}
         if vault is not None:
             d["entries"] = vault.match(self.site)
@@ -76,7 +77,7 @@ def routes(eng: Engine, hub, log) -> list[Route]:
             e = await run_in_threadpool(vault.get, entry_id) if entry_id else None
             if e and normalize_site(r.site) != e["site"] and not normalize_site(r.site).endswith("." + e["site"]):
                 raise RuntimeError("that login is for a different site")
-            payload = {"site": e["site"] if e else r.site}
+            payload = {"site": e["site"] if e else r.site, "agent": r.who}
             if r.kind == "login":
                 if not e:
                     raise RuntimeError("no login chosen")
@@ -121,7 +122,8 @@ def routes(eng: Engine, hub, log) -> list[Route]:
         if kind not in ("login", "code") or not site:
             return err("kind must be login or code, and site a domain")
         expire_old()
-        r = Req(name, kind, site, str(b.get("reason", ""))[:300])
+        who = "".join(ch for ch in str(b.get("who", "")).lower() if ch.isalnum() or ch == "-")[:31]
+        r = Req(name, kind, site, str(b.get("reason", ""))[:300], who)
         reqs[r.id] = r
         audit("requested", agent=name, kind=kind, site=site, reason=r.reason)
         # Standing approval? Fill right away.
@@ -134,6 +136,11 @@ def routes(eng: Engine, hub, log) -> list[Route]:
         r.message = ("Waiting for the user to approve. They've been notified. If this times out, "
                      "call the tool again or report waiting_on_user.")
         publish(r)
+        from hangar import threads
+        tid = threads.thread_for_space(name)
+        if tid:
+            threads.add(tid, "approval", f"{r.who} wants to {'sign in to' if kind == 'login' else 'get a code for'} "
+                                         f"{site}", request=r.id, space=name, reason=r.reason)
         what = "sign in to" if kind == "login" else "get a verification code for"
         log(f"vault: {name} wants to {what} {site}")
         asyncio.get_running_loop().run_in_executor(

@@ -13,6 +13,7 @@ import os
 from urllib.parse import urlsplit
 
 import httpx
+from mcp.server.fastmcp import Context
 
 from hangar_desktop.browser import link
 
@@ -40,9 +41,9 @@ async def _first_visible(frame, selector):
     return None
 
 
-async def fill(site: str, username: str = "", password: str = "", code: str = "") -> dict:
-    """Fill a login or code into the current page, only if it's on `site`."""
-    page = await link.page()
+async def fill(site: str, username: str = "", password: str = "", code: str = "", agent: str = "") -> dict:
+    """Fill a login or code into the agent's current page, only if it's on `site`."""
+    page = await link.page(agent)
     u = urlsplit(page.url)
     if not _matches(u.hostname or "", site):
         raise RuntimeError(f"the browser is on {u.hostname or page.url}, not {site}. "
@@ -72,7 +73,7 @@ async def fill(site: str, username: str = "", password: str = "", code: str = ""
     return {"filled": filled, "page": f"{u.hostname}{u.path}"}
 
 
-async def _ask(kind: str, site: str, reason: str) -> str:
+async def _ask(kind: str, site: str, reason: str, by: str = "") -> str:
     daemon, agent = os.environ.get("HANGAR_DAEMON_URL"), os.environ.get("HANGAR_AGENT", "agent")
     if not daemon:
         return "No Hangar daemon is configured, so the vault isn't available. Report waiting_on_user."
@@ -80,7 +81,7 @@ async def _ask(kind: str, site: str, reason: str) -> str:
     base = f"{daemon}/api/agents/{agent}/vault/requests"
     async with httpx.AsyncClient(timeout=70) as http:
         try:
-            r = await http.post(base, json={"kind": kind, "site": site, "reason": reason}, headers=headers)
+            r = await http.post(base, json={"kind": kind, "site": site, "reason": reason, "who": by}, headers=headers)
             r.raise_for_status()
             req = r.json()
             # Wait up to ~50s for the user (tool calls time out after a minute in some harnesses).
@@ -94,19 +95,20 @@ async def _ask(kind: str, site: str, reason: str) -> str:
     return req["message"]
 
 
-def register(mcp) -> None:
+def register(mcp, who) -> None:
+
     @mcp.tool()
-    async def request_login(site: str, reason: str) -> str:
+    async def request_login(site: str, reason: str, ctx: Context = None) -> str:
         """Ask the user's vault to sign you in to `site` (e.g. "github.com"). First open
         the site's sign-in page in the browser. If approved, Hangar types the username
         and password into the page for you (you never see them); then click the sign-in
         button. `reason`: one short sentence the user sees, e.g. "to check your PRs".
         Never ask the user for passwords any other way."""
-        return await _ask("login", site, reason)
+        return await _ask("login", site, reason, who(ctx))
 
     @mcp.tool()
-    async def request_code(site: str, reason: str) -> str:
+    async def request_code(site: str, reason: str, ctx: Context = None) -> str:
         """Ask for a verification / 2FA code for `site` when its page asks for one
         (authenticator, SMS or email code). Hangar fills it into the code field once
         the user approves or types it in. `reason`: one short sentence for the user."""
-        return await _ask("code", site, reason)
+        return await _ask("code", site, reason, who(ctx))

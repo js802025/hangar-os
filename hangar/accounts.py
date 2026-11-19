@@ -58,6 +58,12 @@ STATUS_CMD = {
 }
 
 
+def env_for(acct: "Account", base: str = MOUNT) -> dict:
+    """Env telling the harness where this account's sign-in lives, if mounted at `base`."""
+    env = {k: v.replace(MOUNT, base, 1) for k, v in ENV[acct.provider].items()}
+    return {"HANGAR_ACCOUNT": acct.name, "HANGAR_ACCOUNT_PROVIDER": acct.provider, "HANGAR_ACCOUNT_DIR": base, **env}
+
+
 @dataclass
 class Account:
     name: str
@@ -115,9 +121,7 @@ class Accounts:
 
     # -- sign-in --------------------------------------------------------------
     def mounts_and_env(self, acct: Account) -> tuple[dict, dict]:
-        vols = {acct.volume: {"bind": MOUNT, "mode": "rw"}}
-        env = {"HANGAR_ACCOUNT": acct.name, "HANGAR_ACCOUNT_PROVIDER": acct.provider, **ENV[acct.provider]}
-        return vols, env
+        return {acct.volume: {"bind": MOUNT, "mode": "rw"}}, env_for(acct, MOUNT)
 
     def login_argv(self, acct: Account, harness_volume: str = "") -> list[str]:
         """argv for an interactive, throwaway login container (needs a real TTY,

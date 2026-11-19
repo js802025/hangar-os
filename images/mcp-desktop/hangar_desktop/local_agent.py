@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import ast
 import asyncio
+import contextlib
 import json
 import os
 import re
@@ -116,17 +117,52 @@ async def chat(client: httpx.AsyncClient, base: str, model: str, messages, tools
     return r.json()["choices"][0]["message"]
 
 
-async def run(task: str, model: str, base: str, mcp_url: str, vision: bool, max_steps: int) -> int:
+class Tools:
+    """One or more MCP servers (the desktop, plus "control" for the pilot),
+    presented to the model as one tool list."""
+
+    def __init__(self) -> None:
+        self.owner: dict = {}
+        self.listed: list = []
+
+    async def add(self, stack: contextlib.AsyncExitStack, url: str, headers: dict) -> None:
+        read, write, _ = await stack.enter_async_context(streamablehttp_client(url, headers=headers))
+        session = await stack.enter_async_context(ClientSession(read, write))
+        await session.initialize()
+        for t in (await session.list_tools()).tools:
+            if t.name not in self.owner:
+                self.owner[t.name] = session
+                self.listed.append(t)
+
+    async def call_tool(self, name: str, args: dict):
+        if name not in self.owner:
+            raise RuntimeError(f"no tool named {name}")
+        return await self.owner[name].call_tool(name, args)
+
+
+async def run(task: str, model: str, base: str, mcp_url: str, vision: bool, max_steps: int,
+              system: str = "") -> int:
     token = os.environ.get("HANGAR_AGENT_TOKEN")
-    headers = {"Authorization": f"Bearer {token}"} if token else None
-    async with streamablehttp_client(mcp_url, headers=headers) as (read, write, _), \
-            ClientSession(read, write) as mcp:
-        await mcp.initialize()
-        tools = to_openai_tools((await mcp.list_tools()).tools, vision)
+    auth = {"Authorization": f"Bearer {token}"} if token else {}
+    me = os.environ.get("HANGAR_AGENT_NAME", "")
+    async with contextlib.AsyncExitStack() as stack:
+        mcp = Tools()
+        await mcp.add(stack, mcp_url, {**auth, **({"X-Hangar-Agent": me} if me else {})})
+        if os.environ.get("HANGAR_PILOT") == "1" and os.environ.get("HANGAR_DAEMON_URL"):
+            await mcp.add(stack, os.environ["HANGAR_DAEMON_URL"] + "/pilot/mcp", auth)
+        tools = to_openai_tools(mcp.listed, vision)
+        vline = VISION if vision else NO_VISION
         messages: list[dict] = [
-            {"role": "system", "content": SYSTEM.format(vision_line=VISION if vision else NO_VISION)},
+            {"role": "system", "content": (system + "\n- " + vline) if system else SYSTEM.format(vision_line=vline)},
             {"role": "user", "content": task},
         ]
+        attach = os.environ.get("HANGAR_ATTACH", "")
+        if attach and vision and os.path.exists(attach):
+            import base64
+            with open(attach, "rb") as f:
+                url = "data:image/png;base64," + base64.b64encode(f.read()).decode()
+            messages.append({"role": "user", "content": [{"type": "text", "text": "The attached screenshot:"},
+                                                         {"type": "image_url", "image_url": {"url": url}}]})
         log(f"model={model} vision={vision} tools={len(tools)}")
         recent: list[str] = []   # signatures of recent calls, to catch loops
         async with httpx.AsyncClient() as http:
@@ -195,13 +231,15 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("task")
     ap.add_argument("--model", required=True)
+    ap.add_argument("--system", default="", help="System prompt (the runner passes Hangar's)")
     ap.add_argument("--base-url", default=os.environ.get("HANGAR_LLM_URL", "http://hangar-host:1234/v1"))
     ap.add_argument("--mcp", default="http://127.0.0.1:8765/mcp")
     ap.add_argument("--no-vision", action="store_true", default=os.environ.get("HANGAR_MODEL_VISION") == "0")
     ap.add_argument("--max-steps", type=int, default=int(os.environ.get("HANGAR_MAX_STEPS", "40")))
     a = ap.parse_args()
     try:
-        code = asyncio.run(run(a.task, a.model, a.base_url.rstrip("/"), a.mcp, not a.no_vision, a.max_steps))
+        code = asyncio.run(run(a.task, a.model, a.base_url.rstrip("/"), a.mcp, not a.no_vision, a.max_steps,
+                               a.system))
     except BaseException as e:  # noqa: BLE001 - one clear line for the user's report
         while isinstance(e, BaseExceptionGroup) and e.exceptions:
             e = e.exceptions[0]

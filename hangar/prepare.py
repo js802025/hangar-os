@@ -26,20 +26,33 @@ class HarnessMissing(SetupError):
 
 
 def prepare(eng: Engine, spec: AgentSpec) -> list[str]:
-    warnings: list[str] = []
+    """Check shares, then resolve the first agent's model and account into mounts and env."""
     try:
         check_shares(spec.shares)
     except ValueError as e:
         raise SetupError(str(e))
-    m = spec.model
-    if not m:
-        return warnings
-    harness = m.split(":", 1)[0]
+    if not spec.model:
+        return []
+    r = resolve_model(eng, spec.model, spec.account)
+    spec.model, spec.account = r["model"], r["account"]
+    spec.volumes.update(r["volumes"])
+    spec.env.update(r["env"])
+    return r["warnings"]
+
+
+def resolve_model(eng: Engine, model: str, account: str = "", account_base: str = "") -> dict:
+    """What an agent with this model needs: {model, account, volumes, env, warnings}.
+    account_base: where its account is mounted (the first agent of a space uses
+    /hangar/account; others /hangar/accounts/<name>)."""
+    from hangar.accounts import MOUNT, env_for
+    warnings: list[str] = []
+    harness = model.split(":", 1)[0]
+    out = {"model": model, "account": "", "volumes": {}, "env": {}, "warnings": warnings}
     if harness in ("claude", "codex"):
         accts = Accounts(eng)
-        if spec.account:
+        if account:
             try:
-                acct = accts.get(spec.account)
+                acct = accts.get(account)
             except KeyError as e:
                 raise SetupError(f"{e}. See `hangar accounts list`.")
             if acct.harness != harness:
@@ -50,32 +63,38 @@ def prepare(eng: Engine, spec: AgentSpec) -> list[str]:
                 raise SetupError(f"{'No' if not matches else 'Several'} {harness} accounts; pick one with "
                                  f"--account. Add one: hangar accounts add <name> --provider {harness}")
             acct = matches[0]
-        spec.account = acct.name
-        vols, env = accts.mounts_and_env(acct)
+        base = account_base or MOUNT
+        out["account"] = acct.name
+        out["volumes"] = {acct.volume: {"bind": base, "mode": "rw"}}
+        out["env"] = env_for(acct, base)
         try:
-            vols.update(harness_mod.mount(eng, harness))
+            out["volumes"].update(harness_mod.mount(eng, harness))
         except harness_mod.NotInstalled as e:
             raise HarnessMissing(str(e), harness) from e
-        spec.volumes.update(vols)
-        spec.env.update(env)
     elif harness == "local":
-        key = m.split(":", 1)[1] if ":" in m else ""
+        key = model.split(":", 1)[1] if ":" in model else ""
+        import os
+        if os.environ.get("HANGAR_LLM_URL"):
+            # Another OpenAI-compatible server instead of LM Studio (Ollama, vLLM, …): trust the name.
+            out["env"] = {"HANGAR_LLM_URL": os.environ["HANGAR_LLM_URL"],
+                          "HANGAR_MODEL_VISION": os.environ.get("HANGAR_LLM_VISION", "1")}
+            return out
         studio = lm.LMStudio()
         if not studio.installed:
             raise SetupError("LM Studio isn't installed (no `lms` CLI). Install it from lmstudio.ai and open it once.")
-        model = studio.get(key)
-        if not model:
+        m = studio.get(key)
+        if not m:
             raise SetupError(f"Model '{key}' isn't downloaded. See `hangar models list`, or "
                              f"`hangar models download {key or '<name>'}`.")
-        if not model.vision:
-            warnings.append(f"{model.name} can't see images, so this agent can't use screenshots. It can "
+        if not m.vision:
+            warnings.append(f"{m.name} can't see images, so this agent can't use screenshots. It can "
                             "still use the browser's text tools. Pick a vision model for desktop work.")
-        if not model.tools:
-            warnings.append(f"{model.name} wasn't trained for tool use; it may struggle.")
+        if not m.tools:
+            warnings.append(f"{m.name} wasn't trained for tool use; it may struggle.")
         studio.ensure_server()
-        studio.ensure_loaded(model.key)
-        spec.model = f"local:{model.key}"
-        spec.env.update({"HANGAR_LLM_URL": lm.AGENT_URL, "HANGAR_MODEL_VISION": "1" if model.vision else "0"})
+        studio.ensure_loaded(m.key)
+        out["model"] = f"local:{m.key}"
+        out["env"] = {"HANGAR_LLM_URL": lm.AGENT_URL, "HANGAR_MODEL_VISION": "1" if m.vision else "0"}
     else:
-        raise SetupError(f"Unknown model '{m}'. Use claude, codex or local:<model>.")
-    return warnings
+        raise SetupError(f"Unknown model '{model}'. Use claude, codex or local:<model>.")
+    return out

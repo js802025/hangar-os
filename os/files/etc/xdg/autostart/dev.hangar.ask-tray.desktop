@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Ask Hangar (tray)
+Comment=Keeps Ask Hangar ready for its shortcuts, with a tray icon
+Exec=hangar-app ask --tray
+Icon=dev.hangar.spaces
+NoDisplay=true
+X-KDE-autostart-phase=2

@@ -284,6 +284,89 @@ class Models(Step):
         then()
 
 
+HARNESS_OF = {"claude": "claude", "anthropic-key": "claude", "codex": "codex", "openai-key": "codex"}
+
+
+def pilot_choices(opts: dict, downloading: list[str], budget_gb: float = 1e9) -> list[tuple[str, dict]]:
+    """Everything the pilot could use: accounts first (Claude, then Codex),
+    then local models that fit this machine (vision first, biggest first), then
+    ones that don't fit, then ones still downloading."""
+    out = []
+    for harness, title in (("claude", "Claude Code"), ("codex", "Codex")):
+        for a in opts["accounts"]:
+            if a["harness"] == harness:
+                out.append((f"{title} · {a['name']}", {"model": harness, "account": a["name"]}))
+    local = sorted(opts["local_models"], key=lambda m: (m["size_gb"] > budget_gb, not m["vision"], -m["size_gb"]))
+    for m in local:
+        big = m["size_gb"] > budget_gb
+        out.append((f"{m['name']} (local{', sees the screen' if m['vision'] else ''}"
+                    f"{', too big for this computer' if big else ''})", {"model": f"local:{m['key']}", "account": ""}))
+    have = {v["model"] for _, v in out}
+    for key in downloading:
+        if f"local:{key}" not in have:
+            out.append((f"{key} (local, downloading…)", {"model": f"local:{key}", "account": ""}))
+    return out
+
+
+class Pilot(Step):
+    title = "Your main agent"
+    subtitle = ("The pilot is who you talk to: press Meta+Space (or the Print key after a screenshot) and ask. "
+                "It answers, or puts agents to work for you.")
+    required = True
+
+    def __init__(self, wiz) -> None:
+        super().__init__(wiz)
+        from PySide6.QtWidgets import QSpinBox
+        self.model = QComboBox()
+        self.boxes = vbox(spacing=4)
+        self.cap = QSpinBox()
+        self.cap.setRange(1, 16)
+        self.cap.setValue(4)
+        self.empty = label("Connect an AI account or pick a local model first (go Back), and the pilot will use "
+                           "it. You can also set it later in Hangar Settings → Orchestration.", "dim", wrap=True)
+        self.checks: list = []
+        self.setLayout(vbox(self.empty, label("The pilot uses", "dim"), self.model,
+                            label("Models it may give the agents it starts", "dim"), self.boxes,
+                            hbox(label("Most agents running at once", "dim"), self.cap, "stretch"),
+                            label("You can change all of this later in Hangar Settings → Orchestration.", "dim"),
+                            "stretch", spacing=8))
+
+    def enter(self) -> None:
+        def got(opts) -> None:
+            self.choices = pilot_choices(opts, self.wiz.downloading(), self.wiz.budget())
+            self.model.clear()
+            for lbl, v in self.choices:
+                self.model.addItem(lbl, v)
+            while self.boxes.count():
+                w = self.boxes.takeAt(0).widget()
+                if w:
+                    w.deleteLater()
+            self.checks = []
+            for lbl, v in self.choices:
+                cb = QCheckBox(lbl)
+                cb.setChecked("too big" not in lbl and "downloading" not in lbl or v == self.model.itemData(0))
+                self.boxes.addWidget(cb)
+                self.checks.append((cb, v))
+            self.empty.setVisible(not self.choices)
+            self.model.setVisible(bool(self.choices))
+        bg(lambda: common.api.get("/api/options"), got)
+
+    def settings(self) -> dict | None:
+        if not getattr(self, "choices", None):
+            return None
+        allowed = [v for cb, v in self.checks if cb.isChecked()] or [self.model.currentData()]
+        return {"pilot": self.model.currentData(), "allowed": allowed, "max_agents": self.cap.value(),
+                "internet": "open"}
+
+    def commit(self, then) -> None:
+        st = self.settings()
+        if st is None:
+            then()
+            return
+        bg(lambda: common.api.put("/api/orchestration", st), lambda _: then(),
+           lambda e: self.wiz.toast("Couldn't save", str(e), True))
+
+
 class Notifications(Step):
     title = "Get notified"
     subtitle = "Hangar tells you when an agent finishes, hits a problem, or needs you."
@@ -347,31 +430,34 @@ class Done(Step):
 
     def __init__(self, wiz) -> None:
         super().__init__(wiz)
-        tips = [("🛰", "Spaces", "Every agent gets its own hidden desktop. The Hangar app shows them all as live "
-                                  "thumbnails. Press the Spaces key (or Meta+S) to see every agent at once."),
-                ("🖐", "Take over", "Open an agent and click Take over to use its desktop yourself. Hand it back "
-                                     "when you're done."),
-                ("🔑", "Passwords", "When an agent needs to sign in to a site, it asks. You approve, and Hangar "
-                                     "fills in the password without the agent ever seeing it.")]
+        tips = [("✦", "Your pilot", "Ask it anything in Hangar, or press Meta+Space anywhere (after a "
+                                     "screenshot too). It answers, or puts a crew of agents on the job and "
+                                     "keeps you posted in the conversation."),
+                ("🛰", "Spaces", "Every agent works on a desktop of its own. Watch them live, take over any "
+                                  "time, and press Meta+S to see them all at once."),
+                ("🔍", "Review", "See exactly what agents changed, undo any file, or open it in Zed."),
+                ("📝", "Notes", "Agents keep what they find in your Notes (plain Markdown, Obsidian-friendly)."),
+                ("🔑", "Passwords", "When an agent needs to sign in, it asks. You approve, and Hangar fills it "
+                                     "in without the agent ever seeing the password.")]
         rows = []
         for icon, t, d in tips:
             ic = label(icon)
             ic.setStyleSheet("font-size: 26px")
             ic.setFixedWidth(40)
             rows.append(hbox(ic, vbox(label(f"<b>{t}</b>"), label(d, "dim", wrap=True), spacing=2), spacing=12))
-        self.launch = button("Launch your first agent", "primary", self.launch_first)
+        self.launch = button("Say hello to your pilot", "primary", self.launch_first)
         self.launch.setMinimumHeight(40)
         self.setLayout(vbox(*rows, "stretch", hbox("stretch", self.launch, "stretch"), spacing=16))
 
     def launch_first(self) -> None:
         def go():
+            self.wiz.ensure_pilot()
             common.api.post("/api/setup/done", {"done": True})
-            subprocess.Popen([sys.executable, "-m", "hangar.apps.spaces", "--new-agent", EXAMPLE_TASK],
-                             start_new_session=True)
+            subprocess.Popen([sys.executable, "-m", "hangar.apps.home"], start_new_session=True)
         bg(go, lambda _: self.wiz.close())
 
 
-STEPS = [Welcome, Network, Accounts, Models, Notifications, Done]
+STEPS = [Welcome, Network, Accounts, Models, Pilot, Notifications, Done]
 
 
 class Backdrop(QWidget):
@@ -452,7 +538,7 @@ class SetupWindow(QMainWindow):
         self.sub.setText(step.subtitle)
         self.back.setVisible(self.i > 0)
         last = self.i == len(self.steps) - 1
-        self.skip.setVisible(not last and self.i > 0)
+        self.skip.setVisible(not last and self.i > 0 and not getattr(step, "required", False))
         self.next.setText("Finish" if last else "Continue")
         self.dots.setText(" ".join(
             f"<span style='color:{C['accent'] if n == self.i else C['line']}; font-size:16px'>●</span>"
@@ -462,7 +548,8 @@ class SetupWindow(QMainWindow):
     def cont(self) -> None:
         step = self.steps[self.i]
         if self.i == len(self.steps) - 1:
-            bg(lambda: common.api.post("/api/setup/done", {"done": True}), lambda _: self.close())
+            bg(lambda: (self.ensure_pilot(), common.api.post("/api/setup/done", {"done": True})),
+               lambda _: self.close())
             return
         self.next.setEnabled(False)
 
@@ -471,6 +558,24 @@ class SetupWindow(QMainWindow):
             self.reload(then=lambda: self.go(self.i + 1))
         step.commit(then)
         QTimer.singleShot(8000, lambda: self.next.setEnabled(True))
+
+    def budget(self) -> float:
+        return float(((self.state or {}).get("hardware") or {}).get("model_budget_gb", 1e9))
+
+    def downloading(self) -> list[str]:
+        return [j["title"].removeprefix("Download ") for j in self.jobs.values()
+                if j.get("kind") == "download" and j["title"].startswith("Download ") and "/" in j["title"]]
+
+    def ensure_pilot(self) -> None:
+        """Runs in a worker: if the pilot was never set, use the best available
+        model (Claude, then Codex, then the strongest local model) and allow all."""
+        cur = common.api.get("/api/orchestration")
+        if cur["pilot"]["model"]:
+            return
+        choices = pilot_choices(common.api.get("/api/options"), self.downloading(), self.budget())
+        if choices:
+            common.api.put("/api/orchestration", {"pilot": choices[0][1], "allowed": [v for _, v in choices],
+                                                  "max_agents": 4, "internet": "open"})
 
     def track(self, job: dict) -> None:
         self.jobs[job["id"]] = job

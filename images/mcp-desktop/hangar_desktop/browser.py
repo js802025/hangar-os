@@ -12,6 +12,7 @@ import asyncio
 import subprocess
 
 from playwright.async_api import Browser, Page, Playwright, async_playwright
+from mcp.server.fastmcp import Context
 
 CDP_URL = "http://127.0.0.1:9222"
 
@@ -85,11 +86,14 @@ SNAPSHOT_JS = r"""
 
 
 class BrowserLink:
+    """One Chromium per space; each agent works in its own tab."""
+
     def __init__(self) -> None:
         self._pw: Playwright | None = None
         self._browser: Browser | None = None
-        self._page: Page | None = None
+        self._pages: dict[str, Page] = {}      # agent -> its current tab
         self._lock = asyncio.Lock()
+        self.default = ""
 
     async def _cdp_up(self) -> bool:
         try:
@@ -116,7 +120,7 @@ class BrowserLink:
             if not self._pw:
                 self._pw = await async_playwright().start()
             self._browser = await self._pw.chromium.connect_over_cdp(CDP_URL)
-            self._page = None
+            self._pages = {}
             return self._browser
 
     async def pages(self) -> list[Page]:
@@ -127,17 +131,27 @@ class BrowserLink:
             pages = [await ctx.new_page()]
         return pages
 
-    async def page(self) -> Page:
+    async def page(self, agent: str = "") -> Page:
+        agent = agent or self.default
         pages = await self.pages()
-        if self._page is None or self._page.is_closed() or self._page not in pages:
-            self._page = pages[-1]
-        return self._page
+        cur = self._pages.get(agent)
+        if cur is None or cur.is_closed() or cur not in pages:
+            taken = {p for a, p in self._pages.items() if a != agent and not p.is_closed()}
+            free = [p for p in pages if p not in taken]
+            if free and (agent == self.default or not taken):
+                cur = free[-1]
+            else:   # a teammate already has every open tab: open one for this agent
+                b = await self.browser()
+                ctx = b.contexts[0] if b.contexts else await b.new_context()
+                cur = await ctx.new_page()
+            self._pages[agent] = cur
+        return cur
 
-    def select(self, page: Page) -> None:
-        self._page = page
+    def select(self, page: Page, agent: str = "") -> None:
+        self._pages[agent or self.default] = page
 
-    async def snapshot(self, max_items: int = 250) -> str:
-        p = await self.page()
+    async def snapshot(self, max_items: int = 250, agent: str = "") -> str:
+        p = await self.page(agent)
         try:
             await p.wait_for_load_state("domcontentloaded", timeout=5000)
         except Exception:
@@ -146,8 +160,8 @@ class BrowserLink:
         head = f"url: {p.url}\ntitle: {await p.title()}\n"
         return head + ("\n".join(lines) if lines else "(no interactive elements found)")
 
-    async def locate(self, ref: int):
-        p = await self.page()
+    async def locate(self, ref: int, agent: str = ""):
+        p = await self.page(agent)
         loc = p.locator(f'[data-hangar-ref="{ref}"]')
         if await loc.count() == 0:
             raise RuntimeError(f"No element [{ref}]; take a new browser_snapshot first.")
@@ -157,93 +171,96 @@ class BrowserLink:
 link = BrowserLink()
 
 
-def register(mcp, guard) -> None:
-    """Add the browser_* tools to a FastMCP server. `guard` raises while paused."""
+def register(mcp, guard, who) -> None:
+    """Add the browser_* tools to a FastMCP server. `guard` raises while paused;
+    `who(ctx)` names the calling agent, which gets its own tab."""
+    import os
+    link.default = os.environ.get("HANGAR_AGENT_NAME", os.environ.get("HANGAR_AGENT", "agent"))
 
     @mcp.tool()
-    async def browser_navigate(url: str) -> str:
+    async def browser_navigate(url: str, ctx: Context = None) -> str:
         """Open a URL in the agent's browser (starts it if needed). Returns a page snapshot."""
         guard()
         if "://" not in url and not url.startswith(("about:", "data:")):
             url = "https://" + url
-        p = await link.page()
+        p = await link.page(who(ctx))
         await p.goto(url, wait_until="domcontentloaded", timeout=45000)
         await p.bring_to_front()
-        return await link.snapshot()
+        return await link.snapshot(agent=who(ctx))
 
     @mcp.tool()
-    async def browser_snapshot() -> str:
+    async def browser_snapshot(ctx: Context = None) -> str:
         """Read the current page as a numbered list of elements: `[n] role "name"`.
         Headings are shown as # lines. Use the numbers with browser_click / browser_type.
         Numbers change after every snapshot."""
-        return await link.snapshot()
+        return await link.snapshot(agent=who(ctx))
 
     @mcp.tool()
-    async def browser_click(ref: int) -> str:
+    async def browser_click(ref: int, ctx: Context = None) -> str:
         """Click element [ref] from the latest snapshot. Returns a fresh snapshot."""
         guard()
-        p, loc = await link.locate(ref)
+        p, loc = await link.locate(ref, who(ctx))
         await loc.click(timeout=10000)
         await asyncio.sleep(0.6)
-        return await link.snapshot()
+        return await link.snapshot(agent=who(ctx))
 
     @mcp.tool()
-    async def browser_type(ref: int, text: str, submit: bool = False) -> str:
+    async def browser_type(ref: int, text: str, submit: bool = False, ctx: Context = None) -> str:
         """Replace the text in field [ref] with `text`; submit=True presses Enter after."""
         guard()
-        p, loc = await link.locate(ref)
+        p, loc = await link.locate(ref, who(ctx))
         await loc.fill(text, timeout=10000)
         if submit:
             await loc.press("Enter")
             await asyncio.sleep(1.0)
-        return await link.snapshot()
+        return await link.snapshot(agent=who(ctx))
 
     @mcp.tool()
-    async def browser_select(ref: int, option: str) -> str:
+    async def browser_select(ref: int, option: str, ctx: Context = None) -> str:
         """Choose `option` (its visible text or value) in dropdown [ref]."""
         guard()
-        p, loc = await link.locate(ref)
+        p, loc = await link.locate(ref, who(ctx))
         try:
             await loc.select_option(label=option, timeout=5000)
         except Exception:
             await loc.select_option(value=option, timeout=5000)
-        return await link.snapshot()
+        return await link.snapshot(agent=who(ctx))
 
     @mcp.tool()
-    async def browser_press(key: str) -> str:
+    async def browser_press(key: str, ctx: Context = None) -> str:
         """Press a key in the page, Playwright style: 'Enter', 'Escape', 'Control+A', 'PageDown'."""
         guard()
-        p = await link.page()
+        p = await link.page(who(ctx))
         await p.keyboard.press(key)
         await asyncio.sleep(0.4)
-        return await link.snapshot()
+        return await link.snapshot(agent=who(ctx))
 
     @mcp.tool()
-    async def browser_back() -> str:
+    async def browser_back(ctx: Context = None) -> str:
         """Go back one page."""
         guard()
-        p = await link.page()
+        p = await link.page(who(ctx))
         await p.go_back(wait_until="domcontentloaded")
-        return await link.snapshot()
+        return await link.snapshot(agent=who(ctx))
 
     @mcp.tool()
-    async def browser_text(max_chars: int = 8000) -> str:
+    async def browser_text(max_chars: int = 8000, ctx: Context = None) -> str:
         """The page's readable text (for reading articles, results, docs)."""
-        p = await link.page()
+        p = await link.page(who(ctx))
         text = await p.evaluate("() => document.body ? document.body.innerText : ''")
         return f"url: {p.url}\n\n{text[:max_chars]}" + ("\n…(truncated)" if len(text) > max_chars else "")
 
     @mcp.tool()
-    async def browser_tabs() -> str:
+    async def browser_tabs(ctx: Context = None) -> str:
         """List open tabs; the current one is marked with *."""
-        cur = await link.page()
+        cur = await link.page(who(ctx))
         lines = []
         for i, pg in enumerate(await link.pages()):
             lines.append(f"{'*' if pg == cur else ' '} {i}: {await pg.title()} — {pg.url}")
         return "\n".join(lines)
 
     @mcp.tool()
-    async def browser_switch_tab(index: int) -> str:
+    async def browser_switch_tab(index: int, ctx: Context = None) -> str:
         """Switch to tab `index` from browser_tabs, or -1 to open a new tab."""
         guard()
         pages = await link.pages()
@@ -251,6 +268,6 @@ def register(mcp, guard) -> None:
             pg = await pages[0].context.new_page()
         else:
             pg = pages[index]
-        link.select(pg)
+        link.select(pg, who(ctx))
         await pg.bring_to_front()
-        return await link.snapshot()
+        return await link.snapshot(agent=who(ctx))

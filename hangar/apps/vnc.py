@@ -154,6 +154,7 @@ class VncView(QWidget):
         super().__init__()
         self.img: QImage | None = None
         self.msg = "Connecting…"
+        self.cursors: dict[str, tuple[int, int, str]] = {}   # agent -> (x, y, colour), in desktop pixels
         self.control = False
         self.buttons = 0
         self.setMinimumSize(320, 200)
@@ -191,6 +192,8 @@ class VncView(QWidget):
         if self.img:
             p.setRenderHint(QPainter.SmoothPixmapTransform)
             p.drawImage(self.target(), self.img)
+        if self.img and self.cursors:
+            self._draw_cursors(p)
         if self.msg:
             p.setPen(QColor(common.C["dim"]))
             p.drawText(self.rect(), Qt.AlignCenter, self.msg)
@@ -198,6 +201,35 @@ class VncView(QWidget):
             p.setPen(QColor(common.C["magenta"]))
             p.drawRect(self.rect().adjusted(0, 0, -1, -1))
         p.end()
+
+    def set_cursors(self, cursors: dict) -> None:
+        self.cursors = cursors
+        self.update()
+
+    def _draw_cursors(self, p: QPainter) -> None:
+        """Each agent's cursor in its colour, with its name."""
+        from PySide6.QtCore import QPointF
+        from PySide6.QtGui import QFont, QPolygonF
+        r = self.target()
+        sx, sy = r.width() / self.img.width(), r.height() / self.img.height()
+        p.setRenderHint(QPainter.Antialiasing)
+        f = QFont()
+        f.setPixelSize(11)
+        f.setBold(True)
+        p.setFont(f)
+        for name, (x, y, color) in self.cursors.items():
+            cx, cy = r.x() + x * sx, r.y() + y * sy
+            arrow = QPolygonF([QPointF(cx, cy), QPointF(cx, cy + 17), QPointF(cx + 4.5, cy + 13),
+                               QPointF(cx + 8, cy + 20), QPointF(cx + 10.5, cy + 19), QPointF(cx + 7, cy + 12),
+                               QPointF(cx + 12.5, cy + 12)])
+            p.setPen(QColor("#0b0d12"))
+            p.setBrush(QColor(color))
+            p.drawPolygon(arrow)
+            w = p.fontMetrics().horizontalAdvance(name) + 10
+            p.setPen(Qt.NoPen)
+            p.drawRoundedRect(QRect(int(cx + 12), int(cy + 18), w, 16), 8, 8)
+            p.setPen(QColor("#0b0d12"))
+            p.drawText(QRect(int(cx + 12), int(cy + 18), w, 16), Qt.AlignCenter, name)
 
     # -- input (only while you have control) ---------------------------------------------
     def _pos(self, e) -> tuple[int, int]:

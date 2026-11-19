@@ -188,6 +188,18 @@ def main():
             if acc.get_editable_text_iface() is not None and Atspi.EditableText.set_text_contents(acc, text):
                 print(f"set {len(text)} characters")
                 return
+        # Insert at the field's cursor through the accessibility API: no keyboard
+        # involved, so agents sharing a desktop can't type over each other.
+        if acc.get_editable_text_iface() is not None:
+            try:
+                n = Atspi.Text.get_character_count(acc)
+                pos = Atspi.Text.get_caret_offset(acc)
+                pos = n if pos < 0 or pos > n else pos
+                if Atspi.EditableText.insert_text(acc, pos, text, len(text.encode())):
+                    print(f"typed {len(text)} characters")
+                    return
+            except Exception:
+                pass
         focus(acc)
         subprocess.run(["xdotool", "type", "--delay", "12", "--", text], check=True)
         print(f"typed {len(text)} characters")

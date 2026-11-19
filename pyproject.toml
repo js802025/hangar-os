@@ -23,6 +23,11 @@ hangar-app = "hangar.apps.launch:main"
 apps = [
     "pyside6-essentials>=6.8",
 ]
+voice = [
+    "faster-whisper>=1.1",
+    "numpy>=2",
+    "sounddevice>=0.5",
+]
 
 [dependency-groups]
 dev = ["pytest>=8"]

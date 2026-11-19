@@ -14,7 +14,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         tini ca-certificates curl wget git jq ripgrep unzip less procps nano \
         python3 python3-venv python3-pip nodejs npm \
         tigervnc-standalone-server tigervnc-tools openbox x11-xserver-utils \
-        xdotool xclip xterm dbus-x11 \
+        xdotool xinput xclip xterm dbus-x11 \
         at-spi2-core libatk-adaptor python3-gi gir1.2-atspi-2.0 \
         mousepad \
         novnc websockify \
@@ -31,6 +31,8 @@ ENV DISABLE_AUTOUPDATER=1 \
 
 # Desktop-control MCP server in its own venv.
 COPY mcp-desktop /opt/hangar/mcp-desktop
+# Slow mirrors shouldn't fail the build.
+ENV PIP_DEFAULT_TIMEOUT=120 PIP_RETRIES=8
 RUN python3 -m venv /opt/hangar/venv \
     && /opt/hangar/venv/bin/pip install --no-cache-dir /opt/hangar/mcp-desktop
 

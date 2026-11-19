@@ -1,5 +1,6 @@
-// Runs once per user: pins Hangar and Passwords to the taskbar.
-var pins = ["applications:dev.hangar.spaces.desktop", "applications:dev.hangar.passwords.desktop"];
+// Runs once per user: pins Hangar, Notes and Passwords to the taskbar.
+var pins = ["applications:dev.hangar.spaces.desktop", "applications:dev.hangar.notes.desktop",
+            "applications:dev.hangar.passwords.desktop"];
 panels().forEach(function (panel) {
     panel.widgets().forEach(function (w) {
         if (w.type !== "org.kde.plasma.icontasks" && w.type !== "org.kde.plasma.taskmanager") return;

@@ -234,19 +234,19 @@ def flavors():
 
 
 @app.command()
-def run(name: str, task: str):
-    """Give a running agent a new task."""
+def run(name: str, task: str, agent: str = typer.Option("", "--agent", "-a", help="Which agent in the space")):
+    """Give a running agent (or one agent of a space) a new task."""
     a = agent_or_exit(name)
     if not a.model:
         con.print(f"[red]{name} has no model.[/] Create it with --model to run tasks.")
         raise typer.Exit(1)
     ensure_daemon(quiet=True)
     try:
-        res = eng().run_task(name, task)
+        res = eng().run_task(name, task, agent=agent)
     except RuntimeError as e:
         con.print(f"[red]{e}[/]")
         raise typer.Exit(1)
-    con.print(f"[green]{name} is working on:[/] {task}")
+    con.print(f"[green]{agent or name} is working on:[/] {task}")
     if res["snapshot"]:
         con.print(f"[dim]Workspace saved first (snapshot {res['snapshot']['id']}); "
                   f"undo with: hangar rollback {name}[/]")
@@ -299,13 +299,14 @@ def ui(print_only: bool = typer.Option(False, "--print", help="Only print the UR
     _open("/", print_only)
 
 
-APP_NAMES = ["spaces", "passwords", "accounts", "models", "settings"]
+APP_NAMES = ["home", "notes", "passwords", "accounts", "models", "settings"]
 
 
 @app.command("open")
-def open_app(name: str = typer.Argument("spaces", help=" | ".join(APP_NAMES)),
+def open_app(name: str = typer.Argument("home", help=" | ".join(APP_NAMES)),
              web: bool = typer.Option(False, "--web", help="Open the web version in a browser instead")):
     """Open one of Hangar's apps (native Qt windows; --web for the browser version)."""
+    name = "home" if name == "spaces" else name
     if name not in APP_NAMES:
         con.print(f"[red]Unknown app.[/] Pick one of: {', '.join(APP_NAMES)}")
         raise typer.Exit(1)
@@ -328,7 +329,7 @@ def overview():
     """Show every agent at once (what the Spaces key does on the Hangar OS)."""
     if not ensure_daemon():
         raise typer.Exit(1)
-    subprocess.Popen([sys.executable, "-m", "hangar.apps.spaces", "--overview"], start_new_session=True,
+    subprocess.Popen([sys.executable, "-m", "hangar.apps.home", "--overview"], start_new_session=True,
                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
@@ -643,6 +644,121 @@ def daemon_stop():
 def daemon_token():
     """Print the admin token (for scripts and `curl -H "Authorization: Bearer …"`)."""
     print(auth.admin_token())
+
+
+# -- teams and the pilot ---------------------------------------------------------
+
+agent_app = typer.Typer(help="Agents inside a space (a space can hold a team).", no_args_is_help=True)
+app.add_typer(agent_app, name="agent")
+
+
+@agent_app.command("add")
+def agent_add(space: str, name: str = typer.Option("", "--name", help="Default: a friendly name"),
+              model: str = typer.Option("", help="claude | codex | local:<model>"),
+              account: str = typer.Option(""), role: str = typer.Option("", help="e.g. 'reviewer'"),
+              task: str = typer.Option("")):
+    """Add an agent to a space. It shares the desktop with its own mouse, keyboard and tab."""
+    from hangar import spaces
+    agent_or_exit(space)
+    try:
+        with con.status("Adding…"):
+            try:
+                e = spaces.add_agent(eng(), space, name, model, account, role)
+            except HarnessMissing as hm:
+                ensure_harness(hm.harness)
+                e = spaces.add_agent(eng(), space, name, model, account, role)
+        if task:
+            eng().run_task(space, task, agent=e["name"])
+    except (SetupError, ValueError, RuntimeError) as ex:
+        con.print(f"[red]{ex}[/]")
+        raise typer.Exit(1)
+    con.print(f"[green]✓[/] [bold {e['color']}]{e['name']}[/] joined {space}"
+              + (f" and is working on: {task}" if task else "."))
+
+
+@agent_app.command("list")
+def agent_list(space: str):
+    """Who's in a space and what each is doing."""
+    a = agent_or_exit(space)
+    t = Table(box=None, header_style="bold dim")
+    for col in ("AGENT", "STATE", "MODEL", "ROLE", "TASK"):
+        t.add_column(col, overflow="ellipsis", no_wrap=True, max_width=40 if col == "TASK" else None)
+    for m in eng().state(a)["agents"]:
+        t.add_row(f"[{m['color']}]●[/] {m['name']}", f"[{STATE_STYLE.get(m['state'], 'white')}]{m['state']}[/]",
+                  m["model"] or "-", m.get("role") or "-", m.get("task") or "-")
+    con.print(t)
+
+
+@agent_app.command("remove")
+def agent_remove(space: str, name: str):
+    """Take an agent out of a space (its work in the workspace stays)."""
+    from hangar import spaces
+    try:
+        spaces.remove_agent(eng(), space, name)
+    except (KeyError, ValueError) as ex:
+        con.print(f"[red]{str(ex).strip(chr(39))}[/]")
+        raise typer.Exit(1)
+    con.print(f"{name} left {space}.")
+
+
+@app.command()
+def messages(space: str, n: int = typer.Option(30, "-n")):
+    """Messages to and from a space's agents (including via the pilot)."""
+    d = _daemon_api("GET", f"/api/agents/{space}/messages/history")
+    for m in d[-n:]:
+        con.print(f"[dim]{m['ts'][11:19]}[/] [bold]{m['from']}[/] → {m['to'] if m['to_space'] == space else m['to_space'] + '/' + m['to']}: {m['text']}")
+    if not d:
+        con.print("No messages yet.")
+
+
+@app.command()
+def ask(question: str, new: bool = typer.Option(False, "--new", help="Start a fresh conversation"),
+        wait: bool = typer.Option(False, "--wait", help="Wait here for the pilot's answer")):
+    """Ask the pilot (your main agent). It answers, or runs agents to get it done."""
+    res = _daemon_api("POST", "/api/ask", json={"question": question, "new": new})
+    con.print("[green]Asked.[/] " + ("The pilot is busy; your message is queued for it." if res.get("queued")
+                                     else "You'll get a notification with the answer."))
+    if wait and not res.get("queued"):
+        start = time.time()
+        with con.status("The pilot is working…"):
+            while time.time() - start < 3600:
+                time.sleep(3)
+                rt = eng().runtime("pilot")
+                r = rt["agents"].get("pilot", {}).get("report")
+                if r and r.get("final") and r["ts"] > time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(start - 2)):
+                    con.print(f"\n[bold]Pilot[/] ({r['status']}): {r['message']}")
+                    return
+
+
+pilot_app = typer.Typer(help="The pilot's model and what it may use.", no_args_is_help=True)
+app.add_typer(pilot_app, name="pilot")
+
+
+@pilot_app.command("show")
+def pilot_show():
+    """Current orchestration settings."""
+    from hangar import pilot
+    o = pilot.load()
+    con.print(f"Pilot model: [bold]{o['pilot']['model'] or 'not set'}[/]"
+              + (f" (account {o['pilot']['account']})" if o["pilot"]["account"] else ""))
+    con.print("May give agents: " + (", ".join(a["model"] + (f" ({a['account']})" if a["account"] else "")
+                                             for a in o["allowed"]) or "[yellow]nothing yet[/]"))
+    con.print(f"Max agents at once: {o['max_agents']} · new spaces' internet: {o['internet']}")
+
+
+@pilot_app.command("set")
+def pilot_set(model: str = typer.Argument(..., help="claude | codex | local:<model>"),
+                  account: str = typer.Option(""),
+                  allow: list[str] = typer.Option([], "--allow", help="A model it may give agents (repeatable), "
+                                                                     "e.g. local:qwen/qwen3.5-9b or claude@personal"),
+                  max_agents: int = typer.Option(4), internet: str = typer.Option("open", help="open | allowlist")):
+    """Choose the pilot's model and what it may use for agents."""
+    from hangar import pilot
+    allowed = [{"model": a.split("@")[0], "account": a.split("@")[1] if "@" in a else ""} for a in allow]
+    o = pilot.save({"pilot": {"model": model, "account": account}, "allowed": allowed,
+                        "max_agents": max_agents, "internet": internet})
+    con.print("[green]✓[/] Saved.")
+    pilot_show()
 
 
 # -- harnesses ------------------------------------------------------------------

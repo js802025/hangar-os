@@ -1,4 +1,19 @@
-# Merged into /etc/xdg/kglobalshortcutsrc by the OS image (M8).
+# Hangar's default shortcuts (change them in System Settings → Shortcuts).
 # The Mission Control key on Apple keyboards sends "Launch (A)"; Meta+S works everywhere.
 [services][dev.hangar.overview.desktop]
 _launch=Launch (A)\tMeta+S
+
+[services][dev.hangar.ask.desktop]
+_launch=Meta+Space
+
+# The normal screenshot keys take a screenshot (saved + copied, as usual) and
+# then offer to ask about it; Esc just keeps the screenshot.
+[services][dev.hangar.ask-screenshot.desktop]
+_launch=Print\tMeta+Shift+S
+
+[services][dev.hangar.ask-context.desktop]
+_launch=Meta+Shift+Space
+
+# Spectacle (KDE's screenshot app) moves to Meta+Print.
+[services][org.kde.spectacle.desktop]
+_launch=Meta+Print

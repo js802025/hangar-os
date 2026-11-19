@@ -48,6 +48,7 @@ QPushButton[kind="ghost"]:hover {{ color: {C['text']}; background: {C['panel2']}
 QLineEdit, QTextEdit, QPlainTextEdit, QComboBox, QSpinBox {{ background: {C['bg2']}; border: 1px solid {C['line']};
     border-radius: 8px; padding: 6px 8px; selection-background-color: {C['accent']}; }}
 QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus, QComboBox:focus {{ border-color: {C['accent']}; }}
+QComboBox::drop-down {{ border: none; width: 26px; subcontrol-origin: padding; subcontrol-position: center right; }}
 QComboBox QAbstractItemView {{ background: {C['panel2']}; border: 1px solid {C['line']}; }}
 QListWidget {{ background: transparent; border: none; outline: none; }}
 QListWidget::item {{ border-radius: 8px; padding: 4px; }}
@@ -419,6 +420,18 @@ class ApprovalBar(QWidget):
 
 
 # -- app bootstrap ----------------------------------------------------------------------
+def markdown_html(text: str, link: str = "#7c9cff") -> str:
+    """Markdown as rich text for Qt, with links in Hangar's accent colour
+    (Qt's Markdown renderer hard-codes blue)."""
+    import re
+    from PySide6.QtGui import QTextDocument
+    doc = QTextDocument()
+    doc.setMarkdown(text)
+    html = re.sub(r"<body[^>]*>", "<body>", doc.toHtml())          # the QML item sets the font
+    html = re.sub(r'(<a [^>]*><span style=")[^"]*', rf"\1color:{link}; text-decoration:none;", html)
+    return html
+
+
 APP_INFO = {
     "spaces": ("Hangar", "H", C["accent"]),
     "passwords": ("Passwords", "P", C["yellow"]),
@@ -426,6 +439,8 @@ APP_INFO = {
     "models": ("Models", "M", C["magenta"]),
     "settings": ("Hangar Settings", "S", C["cyan"]),
     "setup": ("Hangar Setup", "✦", C["accent2"]),
+    "ask": ("Ask Hangar", "✦", C["accent"]),
+    "notes": ("Notes", "N", C["green"]),
 }
 
 

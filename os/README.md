@@ -9,7 +9,10 @@ atomic updates and rollback) with Hangar layered on top.
     app-menu entry and taskbar icon; the Qt apps set a matching Wayland app id)
   - `etc/xdg/autostart/dev.hangar.setup.desktop`: Hangar Setup on first login
   - `etc/xdg/kglobalshortcutsrc`: the Spaces key (Mission Control key or Meta+S)
-    opens the agent overview
+    opens the agent overview; Meta+Space, Print / Meta+Shift+S and
+    Meta+Shift+Space open Ask Hangar (plain / with a screenshot / about this window)
+  - `etc/xdg/autostart/dev.hangar.ask-tray.desktop`: Ask Hangar's tray icon, so
+    its shortcuts open instantly
   - `usr/share/plasma/.../updates/hangar-pin.js`: pins Hangar and Passwords to
     the taskbar (once per user)
   - `usr/lib/systemd/user/`: the daemon and the first-boot image download,

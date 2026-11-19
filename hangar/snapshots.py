@@ -98,3 +98,111 @@ def _delete(agent: str, sid: str) -> None:
 def forget(agent: str) -> None:
     """Delete all of an agent's snapshots (when the agent is destroyed)."""
     shutil.rmtree(ROOT / agent, ignore_errors=True)
+
+
+# -- review: what changed since a snapshot ------------------------------------------------
+def _files_from_tar(data: bytes) -> dict[str, bytes]:
+    import io
+    import tarfile
+    out = {}
+    with tarfile.open(fileobj=io.BytesIO(data)) as tar:
+        for m in tar.getmembers():
+            if m.isfile():
+                path = m.name.split("/", 1)[1] if "/" in m.name else ""
+                if path and not path.startswith(".") and "/." not in path:
+                    out[path] = tar.extractfile(m).read()
+    return out
+
+
+def _current(eng: Engine, agent: str) -> dict[str, bytes]:
+    stream, _ = eng.client.containers.get(f"hangar-{agent}").get_archive(WORKSPACE)
+    return _files_from_tar(b"".join(stream))
+
+
+def _base(agent: str, sid: str | None) -> tuple[dict, dict[str, bytes]]:
+    snaps = list_snapshots(agent)
+    if not snaps:
+        raise SnapshotError(f"{agent} has no snapshots yet (one is taken before every task)")
+    if sid:
+        info = next((s for s in snaps if s["id"] == sid), None)
+        if not info:
+            raise SnapshotError(f"no snapshot {sid}")
+    else:   # the workspace as it was before the latest task
+        info = next((s for s in snaps if s["label"].startswith("before:")), snaps[0])
+    with gzip.open(ROOT / agent / f"{info['id']}.tar.gz", "rb") as f:
+        return info, _files_from_tar(f.read())
+
+
+def changes(eng: Engine, agent: str, sid: str | None = None) -> dict:
+    """Files the agent added, changed or deleted since a snapshot, with diffs."""
+    import difflib
+    info, before = _base(agent, sid)
+    after = _current(eng, agent)
+    files = []
+    for path in sorted(set(before) | set(after)):
+        a, b = before.get(path), after.get(path)
+        if a == b:
+            continue
+        status = "added" if a is None else "deleted" if b is None else "modified"
+        entry = {"path": path, "status": status, "binary": False, "added": 0, "removed": 0, "diff": []}
+        try:
+            ta = (a or b"").decode("utf-8").splitlines()
+            tb = (b or b"").decode("utf-8").splitlines()
+        except UnicodeDecodeError:
+            entry["binary"] = True
+            files.append(entry)
+            continue
+        if len(ta) + len(tb) > 20000:
+            entry["binary"] = True        # too big to show; still revertable
+            files.append(entry)
+            continue
+        for line in list(difflib.unified_diff(ta, tb, lineterm="", n=3))[2:]:
+            kind = "hunk" if line.startswith("@@") else "add" if line.startswith("+") else \
+                "del" if line.startswith("-") else "ctx"
+            entry["added"] += kind == "add"
+            entry["removed"] += kind == "del"
+            entry["diff"].append({"kind": kind, "text": line})
+        files.append(entry)
+    return {"snapshot": info, "files": files}
+
+
+def revert_file(eng: Engine, agent: str, path: str, sid: str | None = None) -> str:
+    """Put one file back as it was in the snapshot (or remove it if it was new)."""
+    import io
+    import tarfile
+    if ".." in path.split("/") or path.startswith("/"):
+        raise SnapshotError("bad path")
+    _info, before = _base(agent, sid)
+    c = eng.client.containers.get(f"hangar-{agent}")
+    if path not in before:
+        c.exec_run(["rm", "-f", f"{WORKSPACE}/{path}"], user="agent")
+        return "removed"
+    data = before[path]
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tar:
+        ti = tarfile.TarInfo(f"workspace/{path}")
+        ti.size, ti.mode, ti.uid, ti.gid = len(data), 0o644, 1000, 1000
+        tar.addfile(ti, io.BytesIO(data))
+    c.put_archive("/home/agent", buf.getvalue())
+    return "restored"
+
+
+def export(eng: Engine, agent: str, dest) -> None:
+    """Copy the workspace to a folder on this computer (for opening in an editor)."""
+    import io
+    import tarfile
+    from pathlib import Path
+    dest = Path(dest)
+    dest.mkdir(parents=True, exist_ok=True)
+    stream, _ = eng.client.containers.get(f"hangar-{agent}").get_archive(WORKSPACE)
+    with tarfile.open(fileobj=io.BytesIO(b"".join(stream))) as tar:
+        for m in tar.getmembers():
+            rel = m.name.split("/", 1)[1] if "/" in m.name else ""
+            if not rel or ".." in rel.split("/") or not (m.isfile() or m.isdir()):
+                continue
+            target = dest / rel
+            if m.isdir():
+                target.mkdir(parents=True, exist_ok=True)
+            else:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(tar.extractfile(m).read())

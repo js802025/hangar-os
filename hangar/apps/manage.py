@@ -272,6 +272,17 @@ class ModelsWindow(Page):
 
 
 # -- Settings ----------------------------------------------------------------------------------
+def model_choices(opts: dict) -> list[tuple[str, dict]]:
+    """(label, {"model", "account"}) for every account and local model."""
+    out = []
+    for a in opts["accounts"]:
+        out.append((f"{'Claude Code' if a['harness'] == 'claude' else 'Codex'} · {a['name']}",
+                    {"model": a["harness"], "account": a["name"]}))
+    for m in opts["local_models"]:
+        out.append((f"{m['name']} (local{', vision' if m['vision'] else ''})", {"model": f"local:{m['key']}", "account": ""}))
+    return out
+
+
 LABELS = {"url": "Topic URL", "token": "Access token (optional)", "webhook": "Incoming webhook URL",
           "bot_token": "Bot token", "chat_id": "Chat ID"}
 HELP = {"ntfy": "Easiest for phones: install the ntfy app and subscribe to a hard-to-guess topic.",
@@ -284,10 +295,98 @@ class SettingsWindow(Page):
         super().__init__("Hangar Settings")
 
     def reload(self) -> None:
-        bg(lambda: (common.api.get("/api/notify"), common.api.get("/api/settings")), self.render)
+        bg(lambda: (common.api.get("/api/notify"), common.api.get("/api/settings"),
+                    common.api.get("/api/orchestration"), common.api.get("/api/options"),
+                    common.api.get("/api/voice"), common.api.get("/api/notes/access")), self.render)
+
+    def orchestration_panel(self, orch: dict, opts: dict) -> QFrame:
+        from PySide6.QtWidgets import QSpinBox
+        choices = model_choices(opts)
+        cond = QComboBox()
+        cond.addItem("Not set", {"model": "", "account": ""})
+        for lbl, v in choices:
+            cond.addItem(lbl, v)
+            if v == orch["pilot"]:
+                cond.setCurrentIndex(cond.count() - 1)
+        boxes = []
+        allowed = [(a["model"], a["account"]) for a in orch["allowed"]]
+        for lbl, v in choices:
+            cb = QCheckBox(lbl)
+            cb.setChecked((v["model"], v["account"]) in allowed)
+            boxes.append((cb, v))
+        cap = QSpinBox()
+        cap.setRange(1, 32)
+        cap.setValue(orch["max_agents"])
+        net = QComboBox()
+        net.addItem("Open internet", "open")
+        net.addItem("Only sites the pilot names for each space", "allowlist")
+        net.setCurrentIndex(0 if orch["internet"] == "open" else 1)
+
+        def save():
+            body = {"pilot": cond.currentData(), "allowed": [v for cb, v in boxes if cb.isChecked()],
+                    "max_agents": cap.value(), "internet": net.currentData()}
+            bg(lambda: common.api.put("/api/orchestration", body), lambda _: self.toast("Orchestration saved"))
+        return panel("Orchestration",
+                     label("The pilot is your main agent: ask it anything (the Ask box in Hangar, or "
+                           "`hangar ask`), and it answers or puts agents to work.", "dim", wrap=True),
+                     label("Pilot model", "dim"), cond,
+                     label("Models it may give agents", "dim"),
+                     *([cb for cb, _ in boxes] or [label("Add an account or download a model first.", "dim")]),
+                     hbox(label("Most agents running at once", "dim"), cap, "stretch"),
+                     label("Internet for spaces it creates", "dim"), net,
+                     hbox(button("Save", "primary", save), "stretch"))
+
+    def ask_panel(self, vo: dict) -> QFrame:
+        keys = ("Meta+Space: ask · Print or Meta+Shift+S: screenshot, then ask · "
+                "Meta+Shift+Space: ask about the window you're in" if sys.platform == "linux" else
+                "On the Hangar OS: Meta+Space, Print / Meta+Shift+S, Meta+Shift+Space. "
+                "On this Mac: the ✦ menu-bar icon (run `hangar-app ask --tray`).")
+        rows = [label(keys, "dim", wrap=True)]
+        if not vo["available"]:
+            rows.append(label("Voice input isn't installed here (the `voice` extra).", "dim"))
+        else:
+            size = QComboBox()
+            for k, v in vo["sizes"].items():
+                size.addItem(f"{k}: {v}" + ("  ✓ downloaded" if k in vo["installed"] else ""), k)
+            size.setCurrentIndex(max(size.findData(vo["chosen"] or "small"), 0))
+
+            def download():
+                k = size.currentData()
+                if k in vo["installed"]:
+                    bg(lambda: common.api.post("/api/voice/choose", {"size": k}),
+                       lambda _: (self.toast(f"Voice uses the {k} model"), self.reload()))
+                    return
+                bg(lambda: common.api.post("/api/voice/download", {"size": k}),
+                   lambda j: JobDialog(self, j, lambda _j: self.reload()).show())
+            state = (f"<span style='color:{C['green']}'>● on</span> ({vo['chosen']} model)" if vo["chosen"]
+                     else f"<span style='color:{C['dim']}'>○ off</span>: nothing downloaded")
+            rows += [label(f"<b>Voice input</b> {state}"),
+                     label("Speak your question instead of typing. Speech is turned into text on this computer "
+                           "and never sent anywhere; you can edit the text before asking.", "dim", wrap=True),
+                     hbox(size, button("Use this model" if vo["chosen"] else "Download", "primary", download)),
+                     hbox(*[button(f"Remove {k}", "ghost", lambda _=False, k=k: bg(
+                         lambda: common.api.delete(f"/api/voice/{k}"), lambda _: self.reload()))
+                         for k in vo["installed"]], "stretch")]
+        return panel("Ask Hangar", *rows)
+
+    def notes_panel(self, na: dict) -> QFrame:
+        pick = QComboBox()
+        for text, v in (("Only their own folder (Notes/Agents/<space>)", "own"),
+                        ("Read all my notes, write only their own folder", "read"),
+                        ("No notes for agents", "off")):
+            pick.addItem(text, v)
+            if v == na["agents"]:
+                pick.setCurrentIndex(pick.count() - 1)
+        pick.currentIndexChanged.connect(lambda _i: bg(
+            lambda: common.api.put("/api/notes/access", {"agents": pick.currentData()}),
+            lambda _: self.toast("Notes access saved")))
+        return panel("Notes",
+                     label(f"Your notes are Markdown files in <code>{na['root']}</code> (open the folder in "
+                           "Obsidian too). Agents keep what they find there, in their own folder.", "dim", wrap=True),
+                     label("What agents can see", "dim"), pick)
 
     def render(self, res) -> None:
-        n, s = res
+        n, s, orch, opts, vo, na = res
         channels = []
         for ch, fields in n["fields"].items():
             cur = n["channels"].get(ch, {})
@@ -351,6 +450,9 @@ class SettingsWindow(Page):
             qr.setPixmap(pm)
         urls = "<br>".join(s["lan_urls"])
         self.set_panels(
+            self.orchestration_panel(orch, opts),
+            self.ask_panel(vo),
+            self.notes_panel(na),
             panel("Notifications", hbox(button("Send test", on=test), results, "stretch"), *channels,
                   sub="You get a notification when an agent finishes, hits a problem or needs you."),
             panel("Access", label(f"This machine: <code>{s['local_url']}</code>" +

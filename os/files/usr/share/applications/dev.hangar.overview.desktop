@@ -2,6 +2,6 @@
 Type=Application
 Name=Hangar Overview
 Comment=Every agent at once (the Spaces key)
-Exec=hangar-app spaces --overview
+Exec=hangar-app home --overview
 Icon=dev.hangar.spaces
 NoDisplay=true

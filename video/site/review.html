@@ -1,0 +1,12 @@
+<!doctype html><meta charset="utf-8"><title>Pull request #12 · Fix flaky auth test</title><link rel=stylesheet href=style.css>
+<header>acme/api <span>Pull request #12</span></header><main>
+<h1 style="font-size:30px">Fix flaky auth test</h1><p class=lede>The token expiry check raced the clock in CI.</p>
+<pre><span class=meta>tests/test_auth.py</span>
+ def test_token_refresh(client, clock):
+<span class=del>-    token = client.login("demo", "pw")
+-    time.sleep(1)</span>
+<span class=add>+    token = client.login("demo", "pw")
++    clock.advance(seconds=61)</span>
+     assert client.refresh(token).status_code == 200</pre>
+<div class=card><b>Checks</b>✔ lint &nbsp; ✔ unit (3.12) &nbsp; ✔ unit (3.13) &nbsp; ⏳ integration</div>
+</main>

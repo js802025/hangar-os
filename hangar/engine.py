@@ -101,6 +101,7 @@ class AgentSpec:
     volumes: dict[str, dict] = field(default_factory=dict)   # extra mounts (account)
     shares: list[str] = field(default_factory=list)          # host folders: "PATH" or "PATH:rw"
     allow: list[str] | None = None   # None = open internet; a list = only these domains (via a gateway)
+    labels: dict[str, str] = field(default_factory=dict)      # extra container labels
     cpus: float = 2.0
     memory: str = "4g"
     screen: str = "1280x800"
@@ -159,15 +160,16 @@ class Engine:
         shares = check_shares(spec.shares)
         labels = {LABEL: spec.name, f"{LABEL}.flavor": spec.flavor, f"{LABEL}.model": spec.model,
                   f"{LABEL}.account": spec.account, f"{LABEL}.task": spec.task[:2000],
-                  f"{LABEL}.shares": json.dumps([f"{p}{':rw' if rw else ''}" for p, rw in shares])}
+                  f"{LABEL}.shares": json.dumps([f"{p}{':rw' if rw else ''}" for p, rw in shares]), **spec.labels}
         share_vols = {str(p): {"bind": f"/home/agent/shared/{p.name}", "mode": "rw" if rw else "ro"}
                       for p, rw in shares}
         env = {"HANGAR_AGENT": spec.name, "HANGAR_SCREEN": spec.screen, "HANGAR_FLAVOR": spec.flavor,
                "HANGAR_MODEL": spec.model, "HANGAR_TASK": spec.task,
                "HANGAR_AGENT_TOKEN": auth.agent_token(spec.name), "HANGAR_DAEMON_URL": DAEMON_AGENT_URL,
                **spec.env}
+        env["HANGAR_AGENT_NAME"] = spec.name           # the space's first agent is named after it
         if spec.task and spec.model:
-            env["HANGAR_AGENT_CMD"] = "hangar-agent"   # start working once the desktop is up
+            env["HANGAR_AGENT_CMD"] = f"hangar-agent --agent {spec.name}"   # start once the desktop is up
         # Empty host port = engine picks a free one. Bound to localhost only.
         ports = {f"{NOVNC_PORT}/tcp": ("127.0.0.1", None), f"{MCP_PORT}/tcp": ("127.0.0.1", None)}
         net_kw: dict = {"ports": ports, "extra_hosts": {"hangar-host": "host-gateway"}}
@@ -200,7 +202,40 @@ class Engine:
                 from hangar import network
                 network.remove(self.client, spec.name)
             raise
+        from hangar import spaces
+        spaces.record_first(spec.name, spec.model, spec.account)
         return self.get(spec.name, container=c)
+
+    def recreate(self, name: str, extra_volumes: dict) -> None:
+        """Replace a space's container with the same settings plus extra mounts
+        (e.g. another agent's account). The home volume, and so the workspace,
+        browser profile and reports, carries over."""
+        old = self.client.containers.get(f"hangar-{name}")
+        old.reload()
+        cfg, host = old.attrs["Config"], old.attrs["HostConfig"]
+        volumes = {}
+        for m in old.attrs.get("Mounts", []):
+            src = m.get("Name") or m.get("Source")
+            volumes[src] = {"bind": m["Destination"], "mode": "rw" if m.get("RW", True) else "ro"}
+        volumes.update(extra_volumes)
+        env = dict(e.split("=", 1) for e in cfg.get("Env") or [] if "=" in e)
+        env.pop("HANGAR_AGENT_CMD", None)              # don't restart the first task
+        kw: dict = {}
+        if host.get("PortBindings"):
+            kw["ports"] = {k: ("127.0.0.1", None) for k in host["PortBindings"]}
+        if host.get("ExtraHosts"):
+            kw["extra_hosts"] = dict(h.split(":", 1) for h in host["ExtraHosts"])
+        net = host.get("NetworkMode")
+        if net and net not in ("default", "bridge"):
+            kw["network"] = net
+        old.remove(force=True)
+        self.client.containers.run(
+            cfg["Image"], name=f"hangar-{name}", hostname=cfg.get("Hostname") or name, detach=True,
+            labels=cfg.get("Labels") or {}, environment=env, volumes=volumes,
+            shm_size=host.get("ShmSize") or "1g", nano_cpus=host.get("NanoCpus") or int(2e9),
+            mem_limit=host.get("Memory") or "4g", security_opt=host.get("SecurityOpt") or ["no-new-privileges"],
+            cap_drop=host.get("CapDrop") or ["ALL"], **kw)
+        self.wait_ready(name, timeout=120)
 
     def get(self, name: str, container=None) -> Agent:
         c = container or self.client.containers.get(f"hangar-{name}")
@@ -291,11 +326,16 @@ class Engine:
         code, out = self.exec(name, ["cat", path])
         return out if code == 0 else ""
 
-    def run_task(self, name: str, task: str, snapshot: bool = True) -> dict:
-        """Start a task in a running agent (in the background). The workspace is
-        snapshotted first so the task can be rolled back."""
-        if self.runtime(name)["busy"]:
-            raise RuntimeError(f"agent '{name}' is already working on a task")
+    def run_task(self, name: str, task: str, snapshot: bool = True, agent: str = "",
+                 extra_env: dict | None = None) -> dict:
+        """Start a task for one agent of a space (default: its first), in the
+        background. The workspace is snapshotted first so it can be rolled back."""
+        from hangar import spaces
+        agent = agent or name
+        env = {**spaces.agent_env(self, name, agent), **(extra_env or {})}
+        rt = self.runtime(name)
+        if rt["agents"].get(agent, {}).get("busy"):
+            raise RuntimeError(f"{agent} is already working on a task in '{name}'")
         result = {"snapshot": None, "warning": ""}
         if snapshot:
             from hangar import snapshots
@@ -304,48 +344,71 @@ class Engine:
             except snapshots.SnapshotError as e:
                 result["warning"] = f"No snapshot before this task: {e}"
         c = self.client.containers.get(f"hangar-{name}")
-        c.exec_run(["bash", "-c", 'exec hangar-agent "$1" >>/home/agent/.hangar/logs/agent.log 2>&1',
-                    "_", task], user="agent", detach=True)
+        log = "agent.log" if agent == name else f"agent-{agent}.log"
+        c.exec_run(["bash", "-c", f'exec hangar-agent --agent "$2" "$1" >>/home/agent/.hangar/logs/{log} 2>&1',
+                    "_", task, agent], user="agent", detach=True, environment=env)
         return result
 
     def runtime(self, name: str) -> dict:
         """Paused flag, current task, last report and whether a harness is
         running, from one exec."""
         script = (r'cd /home/agent/.hangar; test -e paused && echo P=1; '
-                  r'pgrep -f "^bash /opt/hangar/bin/hangar-agent" >/dev/null && echo B=1; '
+                  r'for p in $(pgrep -f "^bash /opt/hangar/bin/hangar-agent"); do '
+                  r'  a=$(tr "\0" " " < /proc/$p/cmdline | sed -n "s/.*--agent \([a-z0-9-]*\).*/\1/p"); '
+                  r'  echo "B=${a:-?}"; done; '
                   r'echo "T=$(base64 -w0 task.txt 2>/dev/null)"; '
-                  r'echo "R=$(tail -n1 reports.jsonl 2>/dev/null)"')
+                  r'for d in agents/*/; do [ -d "$d" ] && echo "AT=$(basename $d)=$(base64 -w0 $d/task.txt 2>/dev/null)"; done; '
+                  r'tail -n 300 reports.jsonl 2>/dev/null | sed "s/^/R=/"')
         code, out = self.exec(name, ["bash", "-c", script])
-        info = {"paused": False, "busy": False, "task": "", "report": None}
+        info: dict = {"paused": False, "busy": False, "task": "", "report": None, "agents": {}}
+
+        def slot(a: str) -> dict:
+            return info["agents"].setdefault(a, {"busy": False, "task": "", "report": None})
         for line in out.splitlines():
             k, _, v = line.partition("=")
             if k == "P":
                 info["paused"] = True
             elif k == "B":
                 info["busy"] = True
+                slot(name if v in ("", "?") else v)["busy"] = True
             elif k == "T" and v:
                 info["task"] = base64.b64decode(v).decode(errors="replace")
+            elif k == "AT":
+                a, _, t = v.partition("=")
+                slot(a)["task"] = base64.b64decode(t).decode(errors="replace") if t else ""
             elif k == "R" and v:
                 try:
-                    info["report"] = json.loads(v)
+                    r = json.loads(v)
                 except ValueError:
-                    pass
+                    continue
+                info["report"] = r
+                slot(r.get("who") or name)["report"] = r
         return info
 
     def state(self, a: Agent) -> dict:
         """What the user cares about: working / idle / taken over / done / error /
         waiting_on_user / exited, plus the current task and last report."""
+        from hangar import spaces
+        roster = spaces.roster(self, a.name)
         if a.status != "running":
-            return {"state": a.status, "task": a.task, "report": None}
+            return {"state": a.status, "task": a.task, "report": None,
+                    "agents": [{**m, "env": None, "state": a.status, "task": "", "report": None} for m in roster]}
         rt = self.runtime(a.name)
         r = rt["report"]
-        if rt["paused"]:
-            state = "taken over"
-        elif rt["busy"]:
-            state = "working"
-        else:
-            state = r["status"] if r else "idle"
-        return {"state": state, "task": rt["task"] or a.task, "report": r}
+
+        def st(busy: bool, rep: dict | None) -> str:
+            if rt["paused"]:
+                return "taken over"
+            return "working" if busy else (rep["status"] if rep else "idle")
+        members = []
+        for m in roster:
+            x = rt["agents"].get(m["name"], {})
+            members.append({"name": m["name"], "color": m.get("color", "#7c9cff"),
+                            "model": m["model"], "account": m.get("account", ""),
+                            "role": m.get("role", ""), "state": st(x.get("busy", False), x.get("report")),
+                            "task": x.get("task") or (rt["task"] if m["name"] == a.name else ""),
+                            "report": x.get("report")})
+        return {"state": st(rt["busy"], r), "task": rt["task"] or a.task, "report": r, "agents": members}
 
     def stop(self, name: str) -> None:
         from hangar import network
@@ -373,5 +436,6 @@ class Engine:
                 self.client.volumes.get(f"hangar-{name}-home").remove(force=True)
             except NotFound:
                 pass
-            from hangar import snapshots
+            from hangar import snapshots, spaces
             snapshots.forget(name)
+            spaces.forget(name)

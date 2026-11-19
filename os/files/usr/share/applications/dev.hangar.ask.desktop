@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Ask Hangar
+Comment=Ask your main agent anything
+Exec=hangar-app ask
+Icon=dev.hangar.spaces
+Categories=Utility;
+NoDisplay=false
+StartupWMClass=dev.hangar.ask

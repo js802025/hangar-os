@@ -43,7 +43,11 @@ from starlette.routing import Mount, Route, WebSocketRoute
 from starlette.staticfiles import StaticFiles
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
-from hangar import auth, manage_api, notify, vault_api
+from hangar import auth, manage_api, notes_api, notify, spaces, threads, vault_api
+from hangar import pilot as pilot_mod
+from hangar.messages import PILOT, Bus, route
+
+CONDUCTOR_SPACE = PILOT
 from hangar.engine import DAEMON_PORT, LABEL, Agent, Engine
 
 HOST = os.environ.get("HANGAR_DAEMON_HOST", "127.0.0.1")
@@ -76,6 +80,9 @@ class Hub:
 
 eng = Engine()
 hub = Hub()
+bus = Bus(hub)
+threads.attach_hub(hub)
+control = pilot_mod.build(eng, bus)
 _shots: dict[tuple[str, int], tuple[float, bytes]] = {}
 
 
@@ -85,7 +92,8 @@ def agent_dict(a: Agent) -> dict:
     st = eng.state(a)
     return {"name": a.name, "state": st["state"], "status": a.status, "flavor": a.flavor,
             "model": a.model, "account": a.account, "task": st["task"], "report": st["report"],
-            "created": a.created, "shares": a.shares, "view": f"/agents/{a.name}/view",
+            "created": a.created, "shares": a.shares, "agents": st.get("agents", []),
+            "network": a.network, "view": f"/agents/{a.name}/view",
             "mcp": f"/agents/{a.name}/mcp"}
 
 
@@ -117,7 +125,11 @@ class AdminAuth:
         if scope["type"] not in ("http", "websocket"):
             return await self.app(scope, receive, send)
         path, method = scope["path"], scope.get("method", "GET")
-        if (path in self.OPEN or path.startswith("/ui/") or vault_api.is_agent_route(path)
+        parts = path.split("/")
+        agent_route = len(parts) == 5 and parts[1:3] == ["api", "agents"] and parts[4] in ("messages", "team")
+        if (path in self.OPEN or path.startswith("/ui/") or vault_api.is_agent_route(path) or agent_route
+                or notes_api.is_agent_route(path)
+                or path.startswith("/pilot/")
                 or (method == "POST" and path.endswith("/reports"))):
             return await self.app(scope, receive, send)   # agent routes check agent tokens themselves
         headers = dict(scope["headers"])
@@ -245,16 +257,44 @@ async def post_report(request: Request) -> JSONResponse:
     auth.private_dir(REPORTS_DIR)
     with _reports_file(name).open("a") as f:
         f.write(json.dumps(report) + "\n")
-    hub.publish({"type": "report", **report})
+    who = str(body.get("who") or name)[:31]
+    report["who"] = who
+    tid = _thread_for(name, who)
+    hub.publish({"type": "report", **report, "thread": tid})
     log(f"report {name} [{status}{' final' if report['final'] else ''}] {report['message'][:200]}")
+    if tid:
+        _record_in_thread(tid, name, who, report)
     if notify.should_notify(report):
+        report["thread"] = tid
         asyncio.get_running_loop().run_in_executor(None, _notify, report)
     return JSONResponse({"ok": True})
 
 
+def _thread_for(space: str, who: str) -> str:
+    if space == CONDUCTOR_SPACE and who == CONDUCTOR_SPACE:
+        return threads.active()
+    return threads.thread_for_space(space)
+
+
+def _record_in_thread(tid: str, space: str, who: str, r: dict) -> None:
+    """The pilot's replies and progress, and reports from spaces it started."""
+    if space == CONDUCTOR_SPACE:
+        if r["final"]:
+            threads.add(tid, "pilot", r["message"], status=r["status"])
+            threads.clear_active()
+        elif not r["message"].startswith("Started:"):
+            threads.add(tid, "progress", r["message"])
+    elif r["final"] or r["status"] == "waiting_on_user":
+        threads.add(tid, "report", r["message"], space=space, who=who, status=r["status"])
+
+
 def _notify(report: dict) -> None:
-    title = notify.title_for(report["agent"], report["status"])
-    res = notify.send(title, report["message"], report["status"])
+    pilot = report["agent"] == CONDUCTOR_SPACE
+    title = "Pilot" if pilot else notify.title_for(report["agent"], report["status"])
+    # The pilot's answers pop up from Hangar's tray icon instead, where a click opens the chat.
+    # Clicking a desktop notification opens the conversation (or the space) in Hangar.
+    opens = ["--thread", report["thread"]] if report.get("thread") else ["--space", report["agent"]]
+    res = notify.send(title, report["message"], report["status"], desktop=not pilot, opens=opens)
     log(f"notify: {title}" + (f" -> {res}" if res else " (no channels configured)"))
 
 
@@ -284,7 +324,7 @@ def release(name, _):
 def run(name, body):
     if not body.get("task"):
         raise ValueError("missing task")
-    return eng.run_task(name, body["task"])
+    return eng.run_task(name, body["task"], agent=body.get("agent") or "")
 
 
 def snapshot(name, body):
@@ -455,8 +495,176 @@ async def lifespan(app):
     hub.loop = asyncio.get_running_loop()
     threading.Thread(target=watch_engine, daemon=True).start()
     log(f"hangar daemon on http://{web.state.host}:{DAEMON_PORT}  (state: {auth.STATE_DIR})")
-    yield
+    async with control.session_manager.run():
+        yield
     await _mcp_http.aclose()
+
+
+# -- teams: messages, roster, cursors --------------------------------------------------
+
+def agent_or_admin(request: Request) -> bool:
+    tok = bearer(request)
+    if auth.check(tok, auth.agent_token(request.path_params["name"])) or auth.check(tok, auth.admin_token()):
+        return True
+    for part in request.headers.get("cookie", "").split(";"):
+        k, _, v = part.strip().partition("=")
+        if k == COOKIE and auth.check(v, auth.admin_token()):
+            return True
+    return False
+
+
+async def messages(request: Request) -> JSONResponse:
+    space = request.path_params["name"]
+    if not agent_or_admin(request):
+        return JSONResponse({"error": "bad token"}, status_code=401)
+    if request.method == "POST":
+        b = await request.json()
+        frm = str(b.get("from") or space)[:31]
+        try:
+            names = [m["name"] for m in await run_in_threadpool(spaces.roster, eng, space)]
+            to_space, to = route(space, str(b.get("to", "")), names)
+            if to_space != PILOT:
+                target = [m["name"] for m in await run_in_threadpool(spaces.roster, eng, to_space)]
+                if to not in target:
+                    raise PermissionError(f"no agent {to} in {to_space}")
+        except (PermissionError, NotFound) as e:
+            return JSONResponse({"error": str(e)}, status_code=403)
+        return JSONResponse(bus.send(space, frm, to_space, to, str(b.get("text", ""))))
+    who = request.query_params.get("for") or space
+    wait = min(float(request.query_params.get("wait", "0") or 0), 50)
+    return JSONResponse(await bus.take(space, who, wait))
+
+
+async def message_history(request: Request) -> JSONResponse:
+    return JSONResponse(bus.history(request.path_params["name"]))
+
+
+async def team(request: Request) -> JSONResponse:
+    if not agent_or_admin(request):
+        return JSONResponse({"error": "bad token"}, status_code=401)
+    a = await get_agent(request.path_params["name"])
+    if not a:
+        return not_found(request.path_params["name"])
+    st = await run_in_threadpool(eng.state, a)
+    return JSONResponse({"agents": [{k: m.get(k) for k in ("name", "color", "role", "state", "task")}
+                                    | {"report": (m.get("report") or {}).get("message", "")}
+                                    for m in st["agents"]]})
+
+
+async def pointers(request: Request) -> JSONResponse:
+    a = await get_agent(request.path_params["name"])
+    if not a or not a.mcp_port or a.status != "running":
+        return JSONResponse({})
+    try:
+        r = await _mcp_http.get(f"http://127.0.0.1:{a.mcp_port}/pointers", headers=a.auth_headers, timeout=5)
+        return JSONResponse(r.json())
+    except (httpx.HTTPError, ValueError):
+        return JSONResponse({})
+
+
+async def add_member(request: Request) -> JSONResponse:
+    space = request.path_params["name"]
+    b = await request.json()
+    try:
+        e = await run_in_threadpool(spaces.add_agent, eng, space, str(b.get("name", "")), str(b.get("model", "")),
+                                    str(b.get("account", "")), str(b.get("role", "")))
+        if b.get("task"):
+            await run_in_threadpool(lambda: eng.run_task(space, b["task"], agent=e["name"]))
+    except Exception as ex:   # SetupError, ValueError, RuntimeError, HarnessMissing…
+        return JSONResponse({"error": str(ex)}, status_code=409)
+    hub.publish({"type": "agent", "agent": space, "action": "add_agent"})
+    return JSONResponse({"ok": True, **{k: e[k] for k in ("name", "color", "model")}})
+
+
+async def remove_member(request: Request) -> JSONResponse:
+    try:
+        await run_in_threadpool(spaces.remove_agent, eng, request.path_params["name"], request.path_params["agent"])
+    except (KeyError, ValueError) as ex:
+        return JSONResponse({"error": str(ex).strip("'")}, status_code=409)
+    hub.publish({"type": "agent", "agent": request.path_params["name"], "action": "remove_agent"})
+    return JSONResponse({"ok": True})
+
+
+async def ask(request: Request) -> JSONResponse:
+    b = await request.json()
+    q = str(b.get("question", "")).strip()
+    if not q:
+        return JSONResponse({"error": "ask something"}, status_code=400)
+    shot = None
+    if b.get("screenshot"):
+        import base64
+        try:
+            shot = base64.b64decode(b["screenshot"], validate=True)
+        except ValueError:
+            return JSONResponse({"error": "bad screenshot"}, status_code=400)
+        if not shot.startswith(b"\x89PNG") or len(shot) > 20 * 2**20:
+            return JSONResponse({"error": "screenshot must be a PNG under 20 MB"}, status_code=400)
+    from hangar.capture import describe
+    ctx = describe({k: str(v)[:4000] for k, v in (b.get("context") or {}).items()
+                    if k in ("app", "title", "url", "selection")})
+    try:
+        res = await run_in_threadpool(pilot_mod.ask, eng, bus, q, bool(b.get("new")), ctx, shot,
+                                      str(b.get("thread") or ""))
+    except Exception as ex:
+        return JSONResponse({"error": str(ex)}, status_code=409)
+    hub.publish({"type": "agent", "agent": PILOT, "action": "ask"})
+    return JSONResponse({"ok": True, **res})
+
+
+async def changes(request: Request) -> JSONResponse:
+    from hangar import snapshots
+    name = request.path_params["name"]
+    try:
+        if request.method == "POST":
+            b = await request.json()
+            done = await run_in_threadpool(snapshots.revert_file, eng, name, str(b.get("path", "")),
+                                           b.get("snapshot") or None)
+            return JSONResponse({"ok": True, "did": done})
+        return JSONResponse(await run_in_threadpool(snapshots.changes, eng, name,
+                                                    request.query_params.get("snapshot") or None))
+    except (snapshots.SnapshotError, NotFound) as e:
+        return JSONResponse({"error": str(e)}, status_code=409)
+
+
+async def thread_list(request: Request) -> JSONResponse:
+    if request.method == "POST":
+        return JSONResponse(threads.create())
+    return JSONResponse(await run_in_threadpool(threads.listing))
+
+
+async def thread_one(request: Request) -> JSONResponse:
+    tid = request.path_params["id"]
+    if request.method == "DELETE":
+        threads.delete(tid)
+        return JSONResponse({"ok": True})
+    try:
+        t = await run_in_threadpool(threads.get, tid)
+    except KeyError as e:
+        return JSONResponse({"error": str(e).strip("'")}, status_code=404)
+    return JSONResponse({**t, "busy": threads.active() == tid})
+
+
+async def orchestration(request: Request) -> JSONResponse:
+    if request.method == "PUT":
+        try:
+            return JSONResponse(pilot_mod.save(await request.json()))
+        except (ValueError, TypeError) as ex:
+            return JSONResponse({"error": str(ex)}, status_code=400)
+    return JSONResponse(pilot_mod.load())
+
+
+class PilotAuth:
+    """The control tools are for the pilot only (its own agent token)."""
+
+    def __init__(self, app) -> None:
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http":
+            h = dict(scope["headers"]).get(b"authorization", b"").decode()
+            if not auth.check(h[7:] if h.startswith("Bearer ") else None, auth.agent_token(PILOT)):
+                return await PlainTextResponse("pilot only", status_code=401)(scope, receive, send)
+        return await self.app(scope, receive, send)
 
 
 class UIFiles(StaticFiles):
@@ -480,6 +688,7 @@ web = Starlette(routes=[
     Mount("/ui", UIFiles(directory=UI_DIR)),
     *manage_api.routes(eng),
     *vault_api.routes(eng, hub, log),
+    *notes_api.routes(hub, log),
     Route("/healthz", healthz),
     Route("/login", login),
     Route("/api/agents", list_agents),
@@ -492,6 +701,18 @@ web = Starlette(routes=[
       for fn in (takeover, release, run, stop, start, snapshot, rollback)),
     Route(f"{A}/snapshots", list_snaps),
     Route("/api/events", events),
+    Route(f"{A}/messages", messages, methods=["GET", "POST"]),
+    Route(f"{A}/messages/history", message_history),
+    Route(f"{A}/team", team),
+    Route(f"{A}/pointers", pointers),
+    Route(f"{A}/agents", add_member, methods=["POST"]),
+    Route(f"{A}/agents/{{agent}}", remove_member, methods=["DELETE"]),
+    Route("/api/ask", ask, methods=["POST"]),
+    Route(f"{A}/changes", changes, methods=["GET", "POST"]),
+    Route("/api/threads", thread_list, methods=["GET", "POST"]),
+    Route("/api/threads/{id}", thread_one, methods=["GET", "DELETE"]),
+    Route("/api/orchestration", orchestration, methods=["GET", "PUT"]),
+    Mount("/pilot", PilotAuth(control.streamable_http_app())),
     Route("/agents/{name}/view", view),
     WebSocketRoute("/agents/{name}/vnc/websockify", vnc_ws),
     Route("/agents/{name}/vnc/{path:path}", vnc_static),

@@ -5,7 +5,19 @@ its own hidden desktop (browser, apps, computer use) that never touches your
 screen, mouse or keyboard. You watch them all as live thumbnails, take over
 any one, and hand it back.
 
-> Status: **M8**: an installable OS for the spare PC (Fedora Kinoite + Hangar,
+> Status: **M11**: Hangar is chat-first. The main window is a conversation
+> with your pilot (like the Claude app): it shows every step, what each space
+> reported and sign-ins waiting on you, with your spaces live alongside. A
+> notification opens the conversation it belongs to. Review what agents
+> changed file by file (revert any file, or open it in Zed), keep notes with
+> your crew in an Obsidian-compatible **Notes** app, and give any space its
+> own KDE virtual desktop. Rebuilt in Qt Quick, so it feels native. Before that
+> (M10): Ask Hangar, the main agent from anywhere. Press a shortcut,
+> optionally with a screenshot or the window you're in, type or speak your
+> question, and the pilot answers. Before that (M9): teams and the pilot. A space can hold several agents,
+> each with its own mouse, keyboard and browser tab on the shared desktop.
+> Ask the pilot (your main agent) anything, and it answers or runs teams
+> across spaces, passing messages between them. Before that (M8): an installable OS for the spare PC (Fedora Kinoite + Hangar,
 > built in GitHub Actions). Agent images are pulled from your GitHub registry
 > and harnesses are installed on demand. Before that (M7): workspace snapshots with rollback, per-agent network
 > allowlists, and research / coding / office flavors whose apps agents can
@@ -53,6 +65,8 @@ uv run python tests/smoke_vault.py  # Passwords: an agent signs in to a fake sit
 uv run --extra apps python tests/smoke_apps.py  # native apps, offscreen; screenshots in out/apps-*.png
 uv run --extra apps python tests/smoke_setup.py # setup wizard, every step; screenshots in out/setup-*.png
 uv run python tests/smoke_m7.py   # M7: snapshots, accessibility tools, network allowlists, flavors
+uv run python tests/smoke_m9.py   # M9: two agents on one desktop, window lock, messaging rules, pilot
+uv run --extra apps --extra voice python tests/smoke_m10.py  # M10: Ask panel with context, local voice
 ```
 
 Screenshots from the smoke test land in `out/`. `make clean` removes all
@@ -106,38 +120,93 @@ first login, and it exits straight away once setup is done.
 
 ## The apps
 
-Hangar's interface is a set of native desktop apps written in Qt (PySide6),
-each with its own window and taskbar icon, on top of the daemon's API:
+Hangar's interface is a set of native desktop apps (Qt: Qt Quick for Hangar
+and Notes, widgets for the rest), each with its own window and taskbar icon,
+on top of the daemon's API:
 
 | app | what it's for |
 |---|---|
-| **Hangar** | every agent as a live thumbnail; open one to watch its desktop, take over, give it a task, read reports and logs; New agent (with a real folder picker for shared folders) |
+| **Hangar** | your conversations with the pilot, your spaces live alongside, review, the overview |
+| **Notes** | your Markdown notes and your agents' findings (Obsidian-compatible, below) |
 | **Passwords** | the vault, modelled on Apple's Passwords app (see below) |
 | **Accounts** | subscriptions and API keys; sign-ins run in a panel with the official link |
 | **Models** | LM Studio models, downloads, server |
-| **Hangar Settings** | notifications, network access (with a QR code for your phone), run setup again |
+| **Hangar Settings** | the pilot, notes access, voice, notifications, network access (QR code for your phone) |
 | **Hangar Setup** | the first-boot wizard (above) |
 
 ```bash
 uv sync --extra apps          # PySide6 (Qt), once
-uv run hangar open            # Hangar (spaces); also: passwords | accounts | models | settings
-uv run hangar overview        # every agent at once, full screen (Esc closes)
+uv run hangar open            # Hangar; also: notes | passwords | accounts | models | settings
+uv run hangar overview        # every space at once, full window (Esc closes)
 ```
 
-**The Spaces key.** Like Mission Control, one key shows every agent working,
-live: click one to jump to it. In the Hangar app it's F3 or the Overview
-button. On the Hangar OS it's bound system-wide to the Mission Control key
-(Apple keyboards) or Meta+S ([os/kde/kglobalshortcutsrc](os/kde/kglobalshortcutsrc)).
-Only one Hangar runs at a time: launching it again (or pressing the key)
-signals the running one.
+### Hangar: chat first
 
-Agents' desktops are shown by a small native VNC client
-([hangar/apps/vnc.py](hangar/apps/vnc.py)) that goes through the daemon's
-token-checked proxy. While you've taken over, your mouse and keyboard go to
-the agent's desktop (Cmd/Ctrl shortcuts included).
+The window has three parts:
 
-Launchers for the OS (one per app, so each gets its own app-menu entry and
-taskbar icon) are in [os/applications/](os/applications).
+- **Chats** (left): every conversation with your pilot, newest first, with a
+  dot on the one it's working on. Below them, your **spaces** as live
+  thumbnails with each agent's coloured avatar.
+- **The conversation** (middle): what you asked, every step the pilot takes
+  ("Started a research space: lisbon", "wren is comparing hotels"), each
+  space's report as a card, and the pilot's answers in Markdown. Sign-in
+  requests from any agent wait at the top with **Sign in** / **Deny**. Ask a
+  follow-up in the same chat and the pilot has the whole history. Attach a
+  screenshot with the camera button.
+- **A space** (right, when you pick one from the sidebar, a step or a report
+  card): its live desktop with every agent's named cursor, **Take over** /
+  **Hand back**, its **crew** (each agent's role, state and latest report),
+  **Changes** (below), and a box to give it a task directly.
+
+**Notifications open the conversation.** When the pilot answers, the tray
+says so; click it and Hangar opens on that chat. On the Hangar OS a space's
+desktop notification ("lisbon finished") opens the chat that started it, or
+the space itself. `hangar-app home --thread ID` / `--space NAME` do the same
+from a script.
+
+**Changes (code review).** Every task starts with a workspace snapshot, so
+Hangar can show exactly what the crew changed since: added, modified and
+deleted files with line diffs. **Revert** puts one file back; **Open in
+editor** opens the agent's shared folder (your real files) or a copy of its
+workspace in [Zed](https://zed.dev), which the Hangar OS installs on first
+boot (any editor on a Mac).
+
+**The overview (the Spaces key).** Every space at once, live and large;
+click one to open it. In Hangar it's the ⌗ button or Meta+S / Ctrl+↑; on the
+Hangar OS, Meta+S (or the Mission Control key on Apple keyboards) works from
+anywhere ([os/files/etc/xdg/kglobalshortcutsrc](os/files/etc/xdg/kglobalshortcutsrc)).
+Launching Hangar again (or pressing the key) signals the running one.
+
+**A space on its own desktop.** **Own desktop** pops a space out full screen
+onto a KDE virtual desktop named "✦ lisbon", so it sits next to your own
+desktops in the pager, KWin's overview and Meta+Ctrl+arrows. Close it and the
+desktop goes away. (On a Mac it's just a separate window.)
+
+Agents' desktops are drawn by a small native VNC client
+([hangar/apps/vnc.py](hangar/apps/vnc.py)) through the daemon's token-checked
+proxy. While you've taken over, your mouse and keyboard go to the agent's
+desktop (Cmd/Ctrl shortcuts included).
+
+### Notes
+
+Notes is a folder of Markdown files, `~/Notes`, the same format as
+Obsidian: open the folder in Obsidian (or any editor) and it just works.
+`[[Title]]` links another note (click it to follow, or to create it), and
+`#tags` are picked up. Each note shows what links to it. Deleting moves a
+note to `Notes/.trash`. **Ask pilot** hands the note to the pilot in a new chat.
+
+Agents get three tools: `notes_search`, `notes_read` and `notes_write`. They
+keep what they find in their own folder, `Notes/Agents/<space>/`, and those
+notes appear in the app marked with the space. What they can see is up to
+you (Settings → Notes):
+
+| setting | agents can |
+|---|---|
+| **own** (default) | read and write only `Notes/Agents/<their space>/`; the pilot can read all of `Notes/Agents/` |
+| **read** | also search and read the rest of your notes (still write only their folder) |
+| **off** | no notes at all |
+
+If an agent changes the note you have open, it reloads and tells you who did it.
 
 ### Web version
 
@@ -279,7 +348,109 @@ window "Untitled 1 - LibreOffice Writer" (app soffice)
 It works for GTK and Qt apps and LibreOffice. For anything without an
 accessibility tree, agents fall back to screenshot + click.
 
-## Snapshots and rollback
+## Teams and the pilot
+
+### Several agents in one space
+
+A **space** is one desktop: one container, browser and workspace. It can
+hold several **agents** working together:
+
+```bash
+uv run hangar new pr-12 --model claude --task "review PR #12"
+uv run hangar agent add pr-12 --role tester --model local:qwen/qwen3.5-9b --task "run the tests"
+uv run hangar agent list pr-12
+uv run hangar run pr-12 --agent wren "now check the CI logs"
+```
+
+- **Their own mouse and keyboard.** The desktop's X server supports multiple
+  pointers, so each agent gets its own mouse+keyboard pair and they can click
+  and type at the same time without moving each other's cursor. The original
+  pointer stays yours, so you can work alongside them.
+- **A colour and a name.** Agents added without a name get a friendly one (wren,
+  juno, milo…). The live view draws every agent's cursor in its colour with
+  its name.
+- **One window at a time.** Most apps have a single text cursor, so a light lock
+  stops two agents typing into the same window; the second is told who's
+  using it and works elsewhere. The pilot is told not to split work that way.
+- **Their own browser tab.** Teammates share the browser's sign-ins but never
+  each other's page.
+- **Desktop-app typing goes through the accessibility API**, not a keyboard, so
+  it can't collide either.
+
+### Messages
+
+Agents have `send_message`, `read_messages` and `team` tools. The rules are
+enforced by the daemon:
+- teammates in a space can message each other,
+- anyone can message the pilot,
+- only the pilot can message another space's agents. So when work in two
+  spaces is related, the pilot passes along what matters, and a stray
+  agent can't reach into another space.
+
+See them with `hangar messages <space>` or the space's **Messages** tab.
+
+### Ask Hangar (shortcuts, screenshots, voice)
+
+The quickest way to reach the pilot, from anywhere:
+
+| shortcut (Hangar OS) | what happens |
+|---|---|
+| **Meta+Space** | the Ask panel, nothing attached |
+| **Print** or **Meta+Shift+S** | drag a box (or click a window), then the Ask panel with that screenshot. It's also saved to Pictures/Screenshots and copied, like any screenshot, so Esc just keeps the screenshot |
+| **Meta+Shift+Space** | the Ask panel about the window you're in: its title and page are offered |
+| tray icon ✦ | the same three, plus Open Hangar / Passwords / Settings |
+
+Each piece of context is a chip you click to include or leave out. Only what
+you explicitly captured starts switched on: the screenshot, or the window and
+page for "ask about this". Selected text is offered but off. Nothing is sent
+until you press Ask. The answer appears in the panel, and as a notification if
+you've closed it. Spectacle, KDE's own screenshot app, moves to Meta+Print.
+All of these shortcuts can be changed in System Settings → Shortcuts.
+
+On your Mac (dev): `uv run --extra apps hangar-app ask --tray` puts ✦ in the
+menu bar. macOS asks once for Screen Recording (screenshots) and
+Accessibility (window titles and browser URLs) permission.
+
+**Voice (optional).** Hangar Settings → Ask Hangar → download a speech model
+(tiny 75 MB … medium 1.5 GB; small is a good default). A 🎙 button then
+appears in the panel. Speech is transcribed on the computer with Whisper:
+audio stays in memory, is never saved or sent, and you can edit the text
+before asking. Nothing is downloaded unless you choose to.
+
+How context reaches the pilot: the screenshot is copied into its
+workspace. Claude Code is told to look at it, Codex gets it as an image
+(`-i`), and the local loop sends it to vision models. The window, page and
+selection go in as text under "What I'm looking at".
+
+### The pilot
+
+Your main agent. Ask it anything: the **Ask Hangar…** box in the Hangar
+app, or
+
+```bash
+uv run hangar ask "review PR #12 and figure out why CI fails" --wait
+```
+
+It answers simple things itself. For bigger jobs it plans the work, creates
+spaces with teams (each agent with a role and a task), checks their reports,
+relays messages between spaces, and gives you one answer, also as a notification.
+It runs in its own space and remembers the conversation (`--new` starts over).
+
+You choose its model, and what it may use, in **Hangar Settings →
+Orchestration** (or `hangar pilot set`):
+
+```bash
+uv run hangar pilot set claude --allow local:qwen/qwen3.5-9b --allow claude@personal --max-agents 4
+```
+
+What it can't do, enforced by the daemon rather than just asked:
+- use a model you haven't allowed,
+- run more agents than your limit,
+- change spaces you created (it can read and message them),
+- widen internet access (with the "only named sites" policy, its spaces get an allowlist),
+- approve password requests (those always come to you).
+
+
 
 Before every task (`hangar run`, or Run in the Hangar app), Hangar copies the
 agent's `~/workspace` to the host (`~/.local/state/hangar/snapshots/`,
@@ -456,6 +627,7 @@ agent's token.
 | `open_app` | `browser` (args = URL), `terminal`, or any command |
 | `read_clipboard`, `wait` | |
 | `report` | post a status update / final summary to the user |
+| `notes_search`, `notes_read`, `notes_write` | the user's notes, as far as Settings → Notes allows (see Notes) |
 
 ### Browser tools (preferred for the web)
 
@@ -568,14 +740,24 @@ These can only be checked by installing on the PC, so expect a round of fixes:
   does) and the login screen background.
 - **NVIDIA GPUs:** the image has no NVIDIA driver yet, so LM Studio would run
   on the CPU there. AMD and Intel GPUs work with the built-in drivers.
+- **Spaces as KDE virtual desktops** (KWin's D-Bus and scripting APIs, in
+  [hangar/kde.py](hangar/kde.py)), clickable desktop notifications
+  (`notify-send --action`), and Zed installing from Flathub on first boot.
 
 ## Repo layout
 
 ```
-hangar/apps/       native Qt apps: spaces.py (+ overview), passwords.py, setup.py (wizard),
-                   manage.py (accounts, models, settings), vnc.py (native viewer), common.py
+hangar/apps/       native Qt apps: home.py (Hangar: chat, spaces, review, overview), notes.py,
+                   space.py (one space, own desktop), passwords.py, setup.py (wizard),
+                   manage.py (accounts, models, settings), vnc.py (native viewer), common.py,
+                   spaces.py (the M5-M10 widget version, kept for now)
+hangar/apps/qml/   Qt Quick UI: Theme (design system), Home, Sidebar, ChatView, SpacePanel,
+                   ReviewView, Overview, Notes, SpaceWindow, and small controls
+hangar/threads.py, notes.py, kde.py   conversations; the notes vault; KDE virtual desktops
 hangar/hardware.py, catalog.py, hostsetup.py   what the wizard detects, suggests and sets
 hangar/snapshots.py, network.py   workspace snapshots; allowlist networks + gateways
+hangar/spaces.py, messages.py, pilot.py   teams in a space, the message bus, the pilot's tools
+hangar/apps/ask.py, capture.py, voice.py      Ask Hangar: panel + tray, screen/window capture, local voice
 images/flavors/    research, coding, office (add your own)
 images/gateway/    the per-agent egress gateway
 os/                Hangar OS: Containerfile, files layered into it, branding, ISO config
@@ -595,6 +777,12 @@ tests/             smoke tests
 M1 hidden desktop + MCP · M2 `hangar` CLI, many agents · M3 accounts, LM Studio,
 local harness · M4 daemon, reports, notifications · M5 Spaces UI · M6 setup
 wizard · M7 snapshots, allowlists, flavors · M8 bootc OS image + ISO
+
+M9 teams + the pilot ·
+
+M10 Ask Hangar ·
+
+M11 chat-first Hangar (Qt Quick), review + Zed, Notes, spaces on KDE desktops ·
 
 Next: install on the real PC and fix what it finds; an NVIDIA variant of the
 OS image; the Hangar Browser (an agent-first browser shell) as a stretch goal.

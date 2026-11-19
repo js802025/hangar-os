@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Screenshot and Ask Hangar
+Comment=Take a screenshot and ask about it
+Exec=hangar-app ask --screenshot
+Icon=dev.hangar.spaces
+Categories=Utility;
+NoDisplay=true
+StartupWMClass=dev.hangar.ask

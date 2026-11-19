@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Notes
+GenericName=Notes
+Comment=Your Markdown notes and your agents' findings
+Exec=hangar-app notes
+Icon=dev.hangar.notes
+Categories=Office;TextEditor;
+Keywords=notes;markdown;obsidian;wiki;
+StartupWMClass=dev.hangar.notes
+StartupNotify=true

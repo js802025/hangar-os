@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Hangar Space
+Comment=One space's desktop on its own virtual desktop
+Exec=hangar-app space %u
+Icon=dev.hangar.space
+NoDisplay=true
+StartupWMClass=dev.hangar.space

@@ -1,0 +1,10 @@
+singleton Theme 1.0 Theme.qml
+HButton 1.0 HButton.qml
+Avatar 1.0 Avatar.qml
+StatusBadge 1.0 StatusBadge.qml
+RoundedImage 1.0 RoundedImage.qml
+Sidebar 1.0 Sidebar.qml
+ChatView 1.0 ChatView.qml
+SpacePanel 1.0 SpacePanel.qml
+ReviewView 1.0 ReviewView.qml
+Overview 1.0 Overview.qml

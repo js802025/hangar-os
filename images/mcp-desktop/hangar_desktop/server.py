@@ -1,8 +1,10 @@
-"""Desktop-control MCP server for a Hangar agent.
+"""Desktop-control MCP server for a Hangar space.
 
-Runs inside the agent container and drives its private X display ($DISPLAY)
-with xdotool. Served over streamable HTTP at :8765/mcp so both an in-container
-harness and the host can connect. Run with `--stdio` for stdio transport.
+Runs inside the space's container and drives its private X display. Several
+agents can share it: each harness sends `X-Hangar-Agent: <name>`, and that
+agent gets its own mouse and keyboard (X multi-pointer, see xinput.py), its own
+browser tab, its own reports and messages. Served over streamable HTTP at
+:8765/mcp. Run with `--stdio` for stdio transport (single agent).
 
 Every HTTP route except /healthz needs `Authorization: Bearer $HANGAR_AGENT_TOKEN`
 (when that's set), so another agent can't drive this desktop through the
@@ -25,7 +27,7 @@ from pathlib import Path
 import anyio
 import httpx
 import mss
-from mcp.server.fastmcp import FastMCP, Image
+from mcp.server.fastmcp import Context, FastMCP, Image
 from PIL import Image as PILImage
 from starlette.requests import Request
 from starlette.responses import JSONResponse, PlainTextResponse, Response
@@ -33,6 +35,31 @@ from starlette.responses import JSONResponse, PlainTextResponse, Response
 HOME = Path.home()
 STATE = HOME / ".hangar"
 REPORTS = STATE / "reports.jsonl"
+SPACE = os.environ.get("HANGAR_AGENT", "agent")          # the space's name (and its first agent's)
+DEFAULT_AGENT = os.environ.get("HANGAR_AGENT_NAME", SPACE)
+
+
+def who(ctx: Context | None) -> str:
+    """Which agent in this space is calling (X-Hangar-Agent header)."""
+    try:
+        req = ctx.request_context.request
+        name = req.headers.get("x-hangar-agent", "") if req is not None else ""
+    except (AttributeError, LookupError, ValueError):
+        name = ""
+    name = "".join(ch for ch in name.lower() if ch.isalnum() or ch == "-")[:31]
+    return name or DEFAULT_AGENT
+
+
+_input = None
+
+
+def inp():
+    """Per-agent input (created lazily: needs the X display)."""
+    global _input
+    if _input is None:
+        from hangar_desktop.xinput import Input
+        _input = Input()
+    return _input
 
 mcp = FastMCP(
     "hangar-desktop",
@@ -94,67 +121,78 @@ def _grab_png(max_width: int = 0) -> bytes:
 
 
 @mcp.tool()
-def screen_info() -> dict:
-    """Screen size, current mouse position and the active window's title."""
+def screen_info(ctx: Context) -> dict:
+    """Screen size, your mouse position, and the window your keyboard is in."""
     w, h = _screen_size()
-    loc = dict(kv.split(":") for kv in _xdo("getmouselocation").split()[:2])
+    me = who(ctx)
+    i = inp()
+    i.devices(me)
+    x, y = i.pointers().get(me, (0, 0))
+    wid = i.focus.get(me)
     try:
-        title = _xdo("getactivewindow", "getwindowname")
+        active = _xdo("getactivewindow", "getwindowname")
     except RuntimeError:
-        title = ""
-    return {"width": w, "height": h, "mouse": [int(loc["x"]), int(loc["y"])], "active_window": title}
+        active = ""
+    return {"width": w, "height": h, "mouse": [x, y], "you": me, "active_window": active,
+            "your_window": i.title(wid) if wid else "", "other_agents": sorted(set(i.devs) - {me})}
+
+
+def _input_call(fn, *a):
+    from hangar_desktop.xinput import WindowBusy
+    try:
+        return fn(*a)
+    except WindowBusy as e:
+        raise RuntimeError(str(e))
 
 
 @mcp.tool()
-def click(x: int, y: int, button: str = "left", clicks: int = 1) -> str:
-    """Move the mouse to (x, y) and click. button: left | middle | right."""
+def click(x: int, y: int, ctx: Context, button: str = "left", clicks: int = 1) -> str:
+    """Move your mouse to (x, y) and click. button: left | middle | right. Clicking a
+    window also puts your keyboard in it."""
     _guard()
-    btn = {"left": "1", "middle": "2", "right": "3"}[button]
-    _xdo("mousemove", "--sync", str(x), str(y), "click", "--repeat", str(clicks), "--delay", "80", btn)
+    btn = {"left": 1, "middle": 2, "right": 3}[button]
+    _input_call(inp().click, who(ctx), x, y, btn, clicks)
     return f"clicked {button} x{clicks} at ({x}, {y})"
 
 
 @mcp.tool()
-def move_mouse(x: int, y: int) -> str:
-    """Move the mouse to (x, y) without clicking (hover)."""
+def move_mouse(x: int, y: int, ctx: Context) -> str:
+    """Move your mouse to (x, y) without clicking (hover)."""
     _guard()
-    _xdo("mousemove", "--sync", str(x), str(y))
+    inp().move(who(ctx), x, y)
     return f"mouse at ({x}, {y})"
 
 
 @mcp.tool()
-def drag(x1: int, y1: int, x2: int, y2: int) -> str:
+def drag(x1: int, y1: int, x2: int, y2: int, ctx: Context) -> str:
     """Press the left button at (x1, y1), drag to (x2, y2) and release."""
     _guard()
-    _xdo("mousemove", "--sync", str(x1), str(y1), "mousedown", "1",
-         "mousemove", "--sync", str(x2), str(y2), "mouseup", "1")
+    _input_call(inp().drag, who(ctx), x1, y1, x2, y2)
     return f"dragged ({x1}, {y1}) -> ({x2}, {y2})"
 
 
 @mcp.tool()
-def type_text(text: str) -> str:
-    """Type text into the focused window."""
+def type_text(text: str, ctx: Context) -> str:
+    """Type text into the window your keyboard is in (click it first)."""
     _guard()
-    _xdo("type", "--delay", "12", "--", text)
+    _input_call(inp().type_text, who(ctx), text)
     return f"typed {len(text)} characters"
 
 
 @mcp.tool()
-def key(keys: str) -> str:
-    """Press keys, xdotool style, space-separated: 'Return', 'ctrl+l', 'ctrl+shift+t Tab'."""
+def key(keys: str, ctx: Context) -> str:
+    """Press keys, space-separated, xdotool style: 'Return', 'ctrl+l', 'ctrl+shift+t Tab'."""
     _guard()
-    _xdo("key", "--delay", "40", *keys.split())
+    _input_call(inp().key, who(ctx), keys)
     return f"pressed {keys}"
 
 
 @mcp.tool()
-def scroll(direction: str = "down", amount: int = 3, x: int | None = None, y: int | None = None) -> str:
+def scroll(ctx: Context, direction: str = "down", amount: int = 3, x: int | None = None, y: int | None = None) -> str:
     """Scroll up/down/left/right by `amount` wheel clicks, optionally at (x, y)."""
     _guard()
-    btn = {"up": "4", "down": "5", "left": "6", "right": "7"}[direction]
-    if x is not None and y is not None:
-        _xdo("mousemove", "--sync", str(x), str(y))
-    _xdo("click", "--repeat", str(amount), "--delay", "30", btn)
+    btn = {"up": 4, "down": 5, "left": 6, "right": 7}[direction]
+    _input_call(inp().scroll, who(ctx), btn, amount, x, y)
     return f"scrolled {direction} {amount}"
 
 
@@ -242,12 +280,17 @@ def wait(seconds: float = 1.0) -> str:
 
 
 @mcp.tool()
-def report(message: str, status: str = "working", final: bool = False) -> str:
+def report(message: str, ctx: Context, status: str = "working", final: bool = False) -> str:
     """Post a status update to your user. status: working | waiting_on_user | done | error.
     Use final=True with a summary when the task is finished or you're stuck."""
+    return _report(message, status, final, who(ctx))
+
+
+def _report(message: str, status: str, final: bool, by: str) -> str:
     entry = {
         "ts": datetime.now(timezone.utc).isoformat(),
-        "agent": os.environ.get("HANGAR_AGENT", "agent"),
+        "agent": SPACE,
+        "who": by,
         "status": status,
         "final": final,
         "message": message,
@@ -266,11 +309,82 @@ def report(message: str, status: str = "working", final: bool = False) -> str:
     return "report sent"
 
 
+def _daemon(method: str, path: str, **kw):
+    daemon = os.environ.get("HANGAR_DAEMON_URL")
+    if not daemon:
+        raise RuntimeError("no Hangar daemon configured, so messaging isn't available")
+    r = httpx.request(method, f"{daemon}/api/agents/{SPACE}{path}", timeout=kw.pop("timeout", 15),
+                      headers={"Authorization": f"Bearer {os.environ.get('HANGAR_AGENT_TOKEN', '')}"}, **kw)
+    if r.status_code >= 400:
+        raise RuntimeError(r.json().get("error", r.text) if "json" in r.headers.get("content-type", "") else r.text)
+    return r.json()
+
+
+@mcp.tool()
+def send_message(to: str, text: str, ctx: Context) -> str:
+    """Message a teammate in this space (by name), or "pilot" (the main agent,
+    who coordinates all spaces and can pass things to other spaces' agents)."""
+    _daemon("POST", "/messages", json={"from": who(ctx), "to": to, "text": text})
+    return f"sent to {to}"
+
+
+@mcp.tool()
+def read_messages(ctx: Context, wait_seconds: int = 0) -> str:
+    """Your new messages (from teammates, the pilot or the user). wait_seconds > 0
+    waits up to that long (max 50) for one to arrive."""
+    msgs = _daemon("GET", f"/messages?for={who(ctx)}&wait={min(max(wait_seconds, 0), 50)}", timeout=60)
+    if not msgs:
+        return "No new messages."
+    return "\n".join(f"[{m['ts'][11:19]}] {m['from']}: {m['text']}" for m in msgs)
+
+
+@mcp.tool()
+def team(ctx: Context) -> str:
+    """Who else is in this space, what they're doing, and their latest report."""
+    info = _daemon("GET", "/team")
+    me = who(ctx)
+    lines = []
+    for a in info["agents"]:
+        tag = " (you)" if a["name"] == me else ""
+        lines.append(f"- {a['name']}{tag}: {a.get('role') or 'agent'}, {a['state']}"
+                     + (f" | task: {a['task'][:120]}" if a.get("task") else "")
+                     + (f" | latest: {a['report'][:160]}" if a.get("report") else ""))
+    return "\n".join(lines) or "You're the only agent here."
+
+
+@mcp.tool()
+def notes_search(query: str = "") -> str:
+    """Search the user's notes (Markdown, Obsidian-style [[links]]) that are shared
+    with agents; an empty query lists the most recent. Your own space's folder is
+    Agents/<space>/; keep findings, plans and summaries there for the user."""
+    r = _daemon("GET", "/notes", params={"q": query} if query else None)
+    if not r["notes"]:
+        return f"No notes found (you can see: {r['scope']})."
+    return "\n".join(f"- {n['path']}: {n.get('snippet') or n['preview']}"[:240] for n in r["notes"][:25])
+
+
+@mcp.tool()
+def notes_read(path: str) -> str:
+    """Read one note (path from notes_search), with what links to it."""
+    n = _daemon("GET", "/notes/read", params={"path": path})
+    back = ", ".join(b["path"] for b in n["backlinks"]) or "none"
+    return f"{n['text']}\n\n---\nlinks: {', '.join(n['links']) or 'none'} | linked from: {back}"
+
+
+@mcp.tool()
+def notes_write(path: str, text: str, ctx: Context, append: bool = False) -> str:
+    """Write a Markdown note in this space's folder (Agents/<space>/<path>); the user
+    sees it in their Notes app. Link other notes with [[Title]]. append=True adds
+    to the end instead of replacing."""
+    n = _daemon("POST", "/notes/write", json={"path": path, "text": text, "append": append, "who": who(ctx)})
+    return f"saved {n['path']}"
+
+
 from hangar_desktop import browser as _browser  # noqa: E402
 from hangar_desktop import vault_tools as _vault  # noqa: E402
 
-_browser.register(mcp, _guard)
-_vault.register(mcp)
+_browser.register(mcp, _guard, who)
+_vault.register(mcp, who)
 
 
 @mcp.custom_route("/healthz", methods=["GET"])
@@ -286,13 +400,21 @@ async def screenshot_png(request: Request) -> Response:
                     headers={"Cache-Control": "no-store"})
 
 
+@mcp.custom_route("/pointers", methods=["GET"])
+async def pointers(_: Request) -> JSONResponse:
+    """Each agent's cursor, so the viewer can label them."""
+    if _input is None:
+        return JSONResponse({})
+    return JSONResponse({a: list(p) for a, p in (await anyio.to_thread.run_sync(_input.pointers)).items()})
+
+
 @mcp.custom_route("/vault/fill", methods=["POST"])
 async def vault_fill(request: Request) -> JSONResponse:
     """Called by the daemon (never by the agent) after the user approves."""
     b = await request.json()
     try:
         res = await _vault.fill(str(b.get("site", "")), str(b.get("username", "")),
-                                str(b.get("password", "")), str(b.get("code", "")))
+                                str(b.get("password", "")), str(b.get("code", "")), str(b.get("agent", "")))
         return JSONResponse({"ok": True, **res})
     except Exception as e:   # report the reason, never the values
         return JSONResponse({"ok": False, "error": str(e)}, status_code=422)
@@ -318,7 +440,7 @@ def report_cli() -> None:
     if len(sys.argv) < 3:
         sys.exit("usage: hangar-report <working|done|error|waiting_on_user> <message>")
     status, message = sys.argv[1], " ".join(sys.argv[2:])
-    print(report(message, status=status, final=status != "working"))
+    print(_report(message, status, status != "working", DEFAULT_AGENT))
 
 
 def main() -> None:

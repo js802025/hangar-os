@@ -18,15 +18,17 @@ ENV UV_CACHE_DIR=/tmp/uv-cache \
     UV_PYTHON_DOWNLOADS=automatic
 RUN dnf -y install uv && \
     UV_PYTHON_INSTALL_DIR=/usr/lib/hangar/python uv venv --python 3.13 /usr/lib/hangar/venv && \
-    VIRTUAL_ENV=/usr/lib/hangar/venv uv pip install --no-cache "/tmp/hangar-src[apps]" && \
+    VIRTUAL_ENV=/usr/lib/hangar/venv uv pip install --no-cache "/tmp/hangar-src[apps,voice]" && \
     ln -s /usr/lib/hangar/venv/bin/hangar /usr/lib/hangar/venv/bin/hangar-app /usr/bin/ && \
     rm -rf /tmp/hangar-src /tmp/uv-cache && dnf clean all
 
 # Desktop integration: launchers, icons, first-login setup, the Spaces key,
-# taskbar pins, user services, wallpaper, boot splash.
+# taskbar pins, user services, wallpaper, boot splash, and Zed (the review
+# editor, from Flathub on first boot: hangar-zed.service).
 COPY os/files/ /
 RUN sed -i "s|@HANGAR_IMAGES@|${HANGAR_IMAGES}|" /usr/lib/environment.d/60-hangar.conf && \
     systemctl --global enable podman.socket hangar-daemon.service hangar-images.service && \
+    systemctl enable hangar-zed.service && \
     for f in /usr/share/plasma/look-and-feel/org.fedoraproject.fedora*/contents/defaults; do \
         sed -i 's/^Image=.*/Image=Hangar/' "$f"; done && \
     gtk-update-icon-cache -f /usr/share/icons/hicolor || true

@@ -319,6 +319,35 @@ def routes(eng: Engine) -> list[Route]:
         threading.Timer(0.5, later).start()
         return JSONResponse({"ok": True})
 
+    # -- voice (optional, local speech-to-text) ------------------------------------------------
+    async def voice_state(_: Request):
+        from hangar import voice
+        return JSONResponse({"available": voice.available(), "installed": voice.installed(),
+                             "chosen": voice.chosen(), "sizes": voice.SIZES})
+
+    async def voice_download(request: Request):
+        from hangar import voice
+        size = str((await body(request)).get("size", "small"))
+        if size not in voice.SIZES:
+            return err("unknown size")
+        if not voice.available():
+            return err("voice support isn't installed (the `voice` extra)")
+        return JSONResponse(jobs.Job(f"Download speech model ({size})",
+                                     [sys.executable, "-m", "hangar.voice", "download", size], kind="download").to_dict())
+
+    async def voice_choose(request: Request):
+        from hangar import voice
+        size = str((await body(request)).get("size", ""))
+        if size not in voice.installed():
+            return err("download that model first")
+        voice.choose(size)
+        return JSONResponse({"ok": True})
+
+    async def voice_remove(request: Request):
+        from hangar import voice
+        voice.remove(request.path_params["size"])
+        return JSONResponse({"ok": True})
+
     # -- harnesses --------------------------------------------------------------------------
     async def list_harness(_: Request):
         have = await run_in_threadpool(harness.installed, eng)
@@ -421,6 +450,10 @@ def routes(eng: Engine) -> list[Route]:
 
     A = "/api/accounts/{name}"
     return [
+        Route("/api/voice", voice_state),
+        Route("/api/voice/download", voice_download, methods=["POST"]),
+        Route("/api/voice/choose", voice_choose, methods=["POST"]),
+        Route("/api/voice/{size}", voice_remove, methods=["DELETE"]),
         Route("/api/harness", list_harness),
         Route("/api/harness/{name}/install", install_harness, methods=["POST"]),
         Route("/api/agents/{name}/network", get_network),

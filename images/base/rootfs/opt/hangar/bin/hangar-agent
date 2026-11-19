@@ -1,28 +1,44 @@
 #!/usr/bin/env bash
-# Runs one task with the agent's harness, chosen by $HANGAR_MODEL:
+# Runs one task for one agent in this space, with the harness chosen by $HANGAR_MODEL:
 #   claude[:<model>]   Claude Code (subscription login or Anthropic API key)
 #   codex[:<model>]    Codex CLI (ChatGPT login or OpenAI API key)
 #   local:<model>      built-in loop against LM Studio ($HANGAR_LLM_URL)
-# Usage: hangar-agent ["task"]   (defaults to $HANGAR_TASK)
+# A space can hold several agents; each runs its own copy of this, with its own
+# name ($HANGAR_AGENT_NAME / --agent), model, account, task file and log.
+# The pilot ($HANGAR_PILOT=1) also gets Hangar's orchestration tools.
+# Usage: hangar-agent [--agent NAME] ["task"]   (task defaults to $HANGAR_TASK)
 set -uo pipefail
 
+if [[ "${1:-}" == "--agent" ]]; then export HANGAR_AGENT_NAME="$2"; shift 2; fi
+ME="${HANGAR_AGENT_NAME:-${HANGAR_AGENT:-agent}}"
+export HANGAR_AGENT_NAME="$ME"
 TASK="${1:-${HANGAR_TASK:-}}"
 MODEL="${HANGAR_MODEL:-}"
 STATE=/home/agent/.hangar
+MINE="$STATE/agents/$ME"
+mkdir -p "$MINE"
+if [[ "$ME" == "${HANGAR_AGENT:-}" ]]; then LOG="$STATE/logs/agent.log"; else LOG="$STATE/logs/agent-$ME.log"; fi
 [[ -z "$TASK" ]] && { echo "hangar-agent: no task"; exit 0; }
-[[ -z "$MODEL" ]] && { hangar-report error "No model set for this agent, so it can't start the task."; exit 1; }
+[[ -z "$MODEL" ]] && { hangar-report error "No model set for $ME, so it can't start the task."; exit 1; }
 
-printf '%s' "$TASK" > "$STATE/task.txt"
-date -u +%FT%TZ > "$STATE/task-started"
+printf '%s' "$TASK" > "$MINE/task.txt"
+date -u +%FT%TZ > "$MINE/task-started"
+[[ "$ME" == "${HANGAR_AGENT:-}" ]] && cp "$MINE/task.txt" "$STATE/task.txt"
 
 # Wait for the desktop MCP server.
 for _ in $(seq 1 60); do curl -fsS -m 1 http://127.0.0.1:8765/healthz >/dev/null && break; sleep 0.5; done
 
-SYS="You are running inside Hangar on your own private Linux desktop (a container; nothing
+SYS="You are $ME, an agent running inside Hangar on a private Linux desktop (a container; nothing
 you do touches the user's screen). Desktop and browser tools come from the 'hangar' MCP
 server: for websites prefer browser_navigate / browser_snapshot / browser_click /
-browser_type (numbered elements); use screenshot + click for other apps. Files go in
-/home/agent/workspace. Nobody is watching to answer questions: work autonomously.
+browser_type (numbered elements); for desktop apps app_snapshot / app_click / app_type;
+screenshot + click for anything else. Files go in /home/agent/workspace.
+Nobody is watching to answer questions: work autonomously.
+${HANGAR_ROLE:+Your role: $HANGAR_ROLE
+}Teammates may share this desktop: you have your own mouse, keyboard and browser tab. If a
+window is busy (another agent is typing in it), work elsewhere. Use team() to see who's
+here, send_message(to, text) to talk to a teammate or to \"pilot\" (who coordinates
+other spaces), and read_messages() now and then.
 To sign in to a website, open its sign-in page and call the hangar request_login tool
 (and request_code for verification codes): the user approves and Hangar fills it in.
 Never ask for, guess or type passwords yourself.
@@ -30,31 +46,56 @@ Post short progress updates with the hangar report tool, and finish with
 report(message=<summary>, status=\"done\", final=true), or status=\"waiting_on_user\"
 with final=true if you need the user."
 
-finals() { local n; n=$(grep -c '"final": true' "$STATE/reports.jsonl" 2>/dev/null); echo "${n:-0}"; }
+if [[ "${HANGAR_PILOT:-}" == 1 ]]; then
+  SYS="$SYS
+
+You are the PILOT: the user's main agent. The 'control' MCP server lets you run
+other agents. For each request:
+- If you can answer it directly and quickly, just answer.
+- Otherwise plan the work and create spaces/agents with control tools (models() shows
+  which models you may use and the limits). One space = one shared desktop; put agents
+  that work on the same thing in the same space, each with a clear role and task.
+  Never give two agents work in the same window or app of one space: split by app or tab.
+- Agents in different spaces only talk through you: read your messages (control
+  read_messages) and pass on what one space needs from another with control message().
+- Check progress with spaces() and reports(); don't start more agents than needed.
+- You can't approve password requests or widen a space's internet access: the user does.
+- When done, give the user one clear answer with report(final=true)."
+fi
+
+finals() { local n; n=$(grep -c "\"who\": \"$ME\".*\"final\": true" "$STATE/reports.jsonl" 2>/dev/null); echo "${n:-0}"; }
 finals_before=$(finals)
 hangar-report working "Started: ${TASK:0:200}"
 
-KEYFILE=/hangar/account/api_key
+ACCT="${HANGAR_ACCOUNT_DIR:-/hangar/account}"
+KEYFILE="$ACCT/api_key"
 sub="${MODEL#*:}"; [[ "$sub" == "$MODEL" ]] && sub=""
 h="${MODEL%%:*}"
 if [[ "$h" == claude || "$h" == codex ]] && ! command -v "$h" >/dev/null; then
-  hangar-report error "The $h harness isn't installed in this agent. Run: hangar harness install $h, then recreate the agent."
+  hangar-report error "The $h harness isn't available in this space. Run: hangar harness install $h, then add the agent again."
   exit 1
 fi
+CONTROL_URL="${HANGAR_DAEMON_URL:-}/pilot/mcp"
 
 case "$MODEL" in
   claude|claude:*)
     if [[ -s "$KEYFILE" ]]; then export ANTHROPIC_API_KEY="$(cat "$KEYFILE")"; fi
-    MCPCFG="$STATE/mcp.json"
-    jq -n --arg t "${HANGAR_AGENT_TOKEN:-}" '{mcpServers: {hangar: {type: "http",
-      url: "http://127.0.0.1:8765/mcp", headers: {Authorization: ("Bearer " + $t)}}}}' > "$MCPCFG"
+    MCPCFG="$MINE/mcp.json"
+    jq -n --arg t "${HANGAR_AGENT_TOKEN:-}" --arg me "$ME" --arg ctl "$CONTROL_URL" --arg c "${HANGAR_PILOT:-}" '
+      {mcpServers: ({hangar: {type: "http", url: "http://127.0.0.1:8765/mcp",
+                              headers: {Authorization: ("Bearer " + $t), "X-Hangar-Agent": $me}}}
+       + (if $c == "1" then {control: {type: "http", url: $ctl, headers: {Authorization: ("Bearer " + $t)}}}
+          else {} end))}' > "$MCPCFG"
     chmod 600 "$MCPCFG"
-    claude -p "$TASK" ${sub:+--model "$sub"} \
+    CONT=(); [[ "${HANGAR_CONTINUE:-}" == 1 ]] && CONT=(--continue)
+    [[ -n "${HANGAR_ATTACH:-}" ]] && TASK="$TASK
+(Look at the attached image with your Read tool: $HANGAR_ATTACH)"
+    claude -p "$TASK" "${CONT[@]}" ${sub:+--model "$sub"} \
       --mcp-config "$MCPCFG" --dangerously-skip-permissions \
       --append-system-prompt "$SYS" --output-format stream-json --verbose
     code=$?
     # Claude reports failures (bad key, expired login, usage limits) in its result line.
-    res=$(grep -h '"type":"result"' "$STATE/logs/agent.log" 2>/dev/null | tail -1)
+    res=$(grep -h '"type":"result"' "$LOG" 2>/dev/null | tail -1)
     if [[ -n "$res" && "$(jq -r '.is_error' <<<"$res" 2>/dev/null)" == "true" ]]; then
       echo "hangar-error: Claude: $(jq -r '.result' <<<"$res" | head -c 300)"
       [[ $code -eq 0 ]] && code=1
@@ -62,16 +103,23 @@ case "$MODEL" in
     ;;
   codex|codex:*)
     if [[ -s "$KEYFILE" ]]; then export OPENAI_API_KEY="$(cat "$KEYFILE")"; fi
-    codex exec ${sub:+-m "$sub"} --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check \
+    CTL=()
+    if [[ "${HANGAR_PILOT:-}" == 1 ]]; then
+      CTL=(-c "mcp_servers.control.url=\"$CONTROL_URL\"" -c 'mcp_servers.control.bearer_token_env_var="HANGAR_AGENT_TOKEN"')
+    fi
+    IMG=(); [[ -n "${HANGAR_ATTACH:-}" ]] && IMG=(-i "$HANGAR_ATTACH")
+    codex exec ${sub:+-m "$sub"} "${IMG[@]}" --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check \
       -c 'mcp_servers.hangar.url="http://127.0.0.1:8765/mcp"' \
       -c 'mcp_servers.hangar.bearer_token_env_var="HANGAR_AGENT_TOKEN"' \
+      -c "mcp_servers.hangar.http_headers={\"X-Hangar-Agent\"=\"$ME\"}" \
+      "${CTL[@]}" \
       "$SYS
 
 Task: $TASK"
     code=$?
     ;;
   local:*)
-    hangar-local-agent --model "${MODEL#local:}" "$TASK"
+    hangar-local-agent --model "${MODEL#local:}" --system "$SYS" "$TASK"
     code=$?
     ;;
   *)
@@ -82,11 +130,12 @@ esac
 echo "hangar-agent: harness exited with code $code" >&2
 
 if [[ "$(finals)" == "$finals_before" ]]; then
+  where="hangar logs ${HANGAR_AGENT:-agent} -s $(basename "$LOG" .log)"
   if [[ $code -eq 0 ]]; then
-    hangar-report done "Finished (the agent didn't write a summary). See: hangar logs ${HANGAR_AGENT:-agent} -s agent"
+    hangar-report done "Finished (the agent didn't write a summary). See: $where"
   else
-    reason=$(grep -h '^hangar-error: ' "$STATE/logs/agent.log" 2>/dev/null | tail -1 | cut -c15-)
-    hangar-report error "${reason:-The harness exited with code $code.} See: hangar logs ${HANGAR_AGENT:-agent} -s agent"
+    reason=$(grep -h '^hangar-error: ' "$LOG" 2>/dev/null | tail -1 | cut -c15-)
+    hangar-report error "${reason:-The harness exited with code $code.} See: $where"
   fi
 fi
 exit $code

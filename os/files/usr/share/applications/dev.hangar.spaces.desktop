@@ -1,8 +1,8 @@
 [Desktop Entry]
 Type=Application
 Name=Hangar
-Comment=See and control your AI agents' desktops
-Exec=hangar-app spaces
+Comment=Chat with your pilot and watch your agents work
+Exec=hangar-app home
 Icon=dev.hangar.spaces
 Categories=System;Utility;
 StartupWMClass=dev.hangar.spaces

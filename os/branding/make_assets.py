@@ -20,7 +20,8 @@ from PySide6.QtGui import QColor, QFont, QGuiApplication, QImage, QLinearGradien
 ROOT = Path(__file__).resolve().parents[1] / "files" / "usr" / "share"
 ACCENT = QColor("#7c9cff")
 APPS = {"spaces": ("H", "#7c9cff"), "passwords": ("P", "#fbbf24"), "accounts": ("A", "#4ade80"),
-        "models": ("M", "#e879f9"), "settings": ("S", "#38bdf8"), "setup": ("✦", "#a7bbff")}
+        "models": ("M", "#e879f9"), "settings": ("S", "#38bdf8"), "setup": ("✦", "#a7bbff"),
+        "notes": ("N", "#4ade80"), "space": ("◳", "#7c9cff")}
 
 
 def hangar_mark(p: QPainter, cx: float, cy: float, size: float, color: QColor) -> None:

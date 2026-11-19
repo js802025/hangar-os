@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Ask Hangar About This Window
+Comment=Ask about the window you're in
+Exec=hangar-app ask --context
+Icon=dev.hangar.spaces
+Categories=Utility;
+NoDisplay=true
+StartupWMClass=dev.hangar.ask

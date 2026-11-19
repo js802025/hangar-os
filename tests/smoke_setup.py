@@ -64,7 +64,7 @@ def main() -> None:
         assert w.state["host"]["dev"], "a Mac must run the wizard in dev mode"
         print("hardware:", w.state["hardware_summary"], f"→ ~{hw['model_budget_gb']:.0f} GB for models")
 
-        names = ["welcome", "network", "accounts", "models", "notify", "done"]
+        names = ["welcome", "network", "accounts", "models", "pilot", "notify", "done"]
         for i, name in enumerate(names):
             wait(10, lambda i=i: w.i == i)
             wait(2.5 if name in ("network", "models") else 0.8)
@@ -73,10 +73,21 @@ def main() -> None:
                 for cb in w.steps[3].checks.values():   # don't download anything in a test
                     cb.setChecked(False)
             if name == "notify":
-                assert not w.steps[4].qr.pixmap().isNull(), "no QR code"
+                assert not w.steps[5].qr.pixmap().isNull(), "no QR code"
+            if name == "pilot":
+                assert not w.skip.isVisible(), "the pilot step must not be skippable"
             if name != "done":
                 w.cont()
-        print("walked all 6 steps with Continue: ok")
+        print("walked all 7 steps with Continue: ok")
+        orch = common.api.get("/api/orchestration")
+        if w.steps[4].choices:
+            assert orch["pilot"]["model"] == w.steps[4].choices[0][1]["model"], orch
+            assert orch["allowed"], orch
+            first = w.steps[4].choices[0][0]
+            assert "too big" not in first, f"defaulted to a model that doesn't fit: {first}"
+            print("pilot set up in Setup:", orch["pilot"]["model"], f"(may use {len(orch['allowed'])} models)")
+        else:
+            print("pilot: no accounts or models on this machine, so nothing to set (ok)")
 
         cfg = notify.load()
         assert cfg.get("ntfy", {}).get("url", "").startswith("https://ntfy.sh/hangar-"), cfg

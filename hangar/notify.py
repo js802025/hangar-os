@@ -45,23 +45,37 @@ def title_for(agent: str, status: str) -> str:
     return f"{agent} {TITLES.get(status, status)}"
 
 
-def desktop(title: str, message: str, status: str) -> None:
-    """A notification on this computer's own desktop (the Hangar OS), via notify-send."""
+def desktop_notify(title: str, message: str, status: str, opens: list[str] | None = None) -> None:
+    """A notification on this computer's own desktop (the Hangar OS), via notify-send.
+    Clicking it opens Hangar (at `opens`, e.g. ["--thread", id])."""
     import shutil
     import subprocess
     import sys
+    import threading
     if sys.platform != "linux" or not shutil.which("notify-send"):
         return
     urgency = "critical" if status in ("error", "waiting_on_user") else "normal"
-    subprocess.Popen(["notify-send", "--app-name=Hangar", "--icon=dev.hangar.spaces", f"--urgency={urgency}",
-                      title, message[:500]], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    cmd = ["notify-send", "--app-name=Hangar", "--icon=dev.hangar.spaces", f"--urgency={urgency}",
+           "--action=default=Open", "--wait", title, message[:500]]
+
+    def wait() -> None:
+        try:
+            out = subprocess.run(cmd, capture_output=True, text=True, timeout=3600).stdout.strip()
+        except (OSError, subprocess.TimeoutExpired):
+            return
+        if out == "default":
+            subprocess.Popen([sys.executable, "-m", "hangar.apps.home", *(opens or [])], start_new_session=True,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    threading.Thread(target=wait, daemon=True).start()
 
 
-def send(title: str, message: str, status: str = "done", cfg: dict | None = None) -> dict[str, str]:
+def send(title: str, message: str, status: str = "done", cfg: dict | None = None,
+         desktop: bool = True, opens: list[str] | None = None) -> dict[str, str]:
     """Send to every configured channel. Returns {channel: "ok" | error}."""
     cfg = load() if cfg is None else cfg
     results: dict[str, str] = {}
-    desktop(title, message, status)
+    if desktop:
+        desktop_notify(title, message, status, opens)
     with httpx.Client(timeout=10) as http:
         for name, c in cfg.items():
             try:

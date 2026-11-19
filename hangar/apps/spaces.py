@@ -9,7 +9,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QPixmap
+from PySide6.QtGui import QColor, QPixmap
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QFileDialog, QFrame, QGridLayout, QLabel,
                                QLineEdit, QMainWindow, QMessageBox, QPlainTextEdit, QScrollArea, QStackedWidget,
                                QTabWidget, QTextEdit, QVBoxLayout, QWidget)
@@ -51,9 +51,10 @@ class AgentCard(QFrame):
         overlay.setLayout(self.badge_slot)
         self.title = label("", "h2")
         self.sub = label("", "dim")
+        self.team = label("")
         self.task = label("", wrap=True)
         self.report = label("", "dim", wrap=True)
-        self.setLayout(vbox(self.thumb, vbox(self.title, self.sub, self.task, self.report, spacing=3,
+        self.setLayout(vbox(self.thumb, vbox(self.title, self.sub, self.team, self.task, self.report, spacing=3,
                                              margins=(14, 10, 14, 14)), spacing=0))
 
     def mousePressEvent(self, _e) -> None:
@@ -68,7 +69,14 @@ class AgentCard(QFrame):
         self.badge_slot.addWidget(badge(a["state"]))
         self.badge_slot.parentWidget().adjustSize()
         self.title.setText(a["name"])
-        self.sub.setText(f"{a['flavor']} · {model_label(a['model'])}" + (f" · {a['account']}" if a["account"] else ""))
+        members = a.get("agents") or []
+        lead = members[0] if members else a          # the roster is the truth (agents can change model)
+        self.sub.setText(f"{a['flavor']} · {model_label(lead['model'])}"
+                         + (f" · {lead.get('account')}" if lead.get("account") else ""))
+        self.team.setText(" ".join(f"<span style='color:{m['color']}'>●</span> {m['name']}"
+                                   + (" <span style='color:#4ade80'>⋯</span>" if m["state"] == "working" else "")
+                                   for m in members) if len(members) > 1 else "")
+        self.team.setVisible(len(members) > 1)
         self.task.setText((a["task"] or "No task")[:160])
         self.report.setText((a["report"] or {}).get("message", "")[:160])
         if not self.running:
@@ -152,7 +160,8 @@ class Grid(QWidget):
 
 
 class AgentPage(QWidget):
-    """One agent: live desktop, take over, next task, reports / logs / about."""
+    """One space: live desktop (every agent's cursor), its team, tasks, messages,
+    reports, logs, history, network."""
 
     def __init__(self, win: "SpacesWindow", name: str) -> None:
         super().__init__()
@@ -171,8 +180,19 @@ class AgentPage(QWidget):
         self.task = QLineEdit()
         self.task.setPlaceholderText("Give it a new task…")
         self.task.returnPressed.connect(self.run_task)
+        self.who = QComboBox()
+        self.who.setMinimumWidth(120)
         self.taskbar = QWidget()
-        self.taskbar.setLayout(hbox(self.task, button("Run", "primary", self.run_task)))
+        self.taskbar.setLayout(hbox(self.who, self.task, button("Run", "primary", self.run_task)))
+        self.teambox = vbox(spacing=6)
+        team_body = QWidget()
+        team_body.setObjectName("scrollbody")
+        team_body.setLayout(vbox(self.teambox, "stretch", margins=(4, 8, 4, 4)))
+        team_scroll = QScrollArea()
+        team_scroll.setWidgetResizable(True)
+        team_scroll.setWidget(team_body)
+        self.msgs = QTextEdit()
+        self.msgs.setReadOnly(True)
         self.reports = QTextEdit()
         self.reports.setReadOnly(True)
         self.logs = QPlainTextEdit()
@@ -181,7 +201,9 @@ class AgentPage(QWidget):
         self.about = label("", wrap=True, select=True)
         self.about.setAlignment(Qt.AlignTop)
         tabs = QTabWidget()
+        tabs.addTab(team_scroll, "Team")
         tabs.addTab(self.reports, "Reports")
+        tabs.addTab(self.msgs, "Messages")
         tabs.addTab(self.logs, "Logs")
         self.history = QWidget()
         self.history_list = vbox(spacing=6)
@@ -209,7 +231,7 @@ class AgentPage(QWidget):
         tabs.addTab(self.about, "About")
         tabs.currentChanged.connect(lambda i: (tabs.widget(i) is self.history and self.load_history(),
                                                tabs.widget(i) is self.net_tab and self.load_network()))
-        tabs.setFixedWidth(360)
+        tabs.setFixedWidth(440)
         self.tabs = tabs
         left = vbox(self.banner, self.view, self.taskbar, spacing=10)
         left.setStretch(1, 1)
@@ -219,6 +241,10 @@ class AgentPage(QWidget):
         self.poll = QTimer(self)
         self.poll.timeout.connect(self.load_side)
         self.poll.start(3000)
+        self.cursor_timer = QTimer(self)
+        self.cursor_timer.timeout.connect(self.load_cursors)
+        self.cursor_timer.start(400)
+        self._cursor_busy = False
         self.load_side()
 
     def update_from(self, a: dict | None) -> None:
@@ -240,14 +266,92 @@ class AgentPage(QWidget):
         self.actions.addWidget(button("Delete", "danger", self.delete))
         self.view.set_control(taken)
         self.banner.setVisible(taken)
-        self.taskbar.setVisible(bool(a["model"]) and running)
+        members = a.get("agents") or []
+        with_model = [m for m in members if m["model"]]
+        self.taskbar.setVisible(bool(with_model) and running)
+        cur = self.who.currentData()
+        self.who.blockSignals(True)
+        self.who.clear()
+        for m in with_model:
+            self.who.addItem(f"● {m['name']}", m["name"])
+            self.who.setItemData(self.who.count() - 1, QColor(m["color"]), Qt.ForegroundRole)
+        if cur and self.who.findData(cur) >= 0:
+            self.who.setCurrentIndex(self.who.findData(cur))
+        self.who.setVisible(len(with_model) > 1)
+        self.who.blockSignals(False)
+        self.render_team(members, running)
         shares = "<br>".join(a.get("shares") or []) or "nothing"
         self.about.setText(f"<p><b>State</b><br>{a['state']}</p><p><b>Flavor</b><br>{a['flavor']}</p>"
                            f"<p><b>Model</b><br>{a['model'] or 'none'}</p><p><b>Account</b><br>{a['account'] or 'none'}</p>"
                            f"<p><b>Task</b><br>{a['task'] or 'none'}</p><p><b>Shared folders</b><br>{shares}</p>"
                            f"<p><b>Created</b><br>{a['created']}</p><p><b>MCP</b><br>{common.api.base}{a['mcp']}</p>")
 
+    def render_team(self, members: list[dict], running: bool) -> None:
+        while self.teambox.count():
+            it = self.teambox.takeAt(0)
+            if it.widget():
+                it.widget().deleteLater()
+        for m in members:
+            f = QFrame()
+            f.setObjectName("panel")
+            dot = label("●")
+            dot.setStyleSheet(f"color:{m['color']}; font-size:18px")
+            rm = None if m is members[0] else button("✕", "ghost", lambda _=False, n=m["name"]: self.remove_member(n),
+                                                     tip=f"Remove {m['name']} from this space")
+            f.setLayout(vbox(
+                hbox(dot, label(f"<b>{m['name']}</b>"), badge(m["state"]), "stretch", rm),
+                label(" · ".join(x for x in (m.get("role"), model_label(m["model"]), m.get("account")) if x), "dim"),
+                label(m["task"][:200], wrap=True) if m.get("task") else None,
+                label((m.get("report") or {}).get("message", "")[:200], "dim", wrap=True) if m.get("report") else None,
+                spacing=3, margins=(10, 8, 10, 8)))
+            self.teambox.addWidget(f)
+        if running:
+            self.teambox.addWidget(button("+ Add an agent to this space", on=self.add_member))
+            self.teambox.addWidget(label("Agents in a space share its desktop, files and browser. Each has its "
+                                         "own mouse, keyboard and tab.", "dim", wrap=True))
+
+    def add_member(self) -> None:
+        bg(lambda: common.api.get("/api/options"), lambda opts: AddAgentDialog(self, opts).exec())
+
+    def remove_member(self, name: str) -> None:
+        bg(lambda: common.api.delete(f"/api/agents/{self.name}/agents/{name}"),
+           lambda _: (self.win.toast(f"{name} left {self.name}"), self.win.refresh()))
+
+    def load_cursors(self) -> None:
+        if self._cursor_busy or not self.isVisible() or not self.agent:
+            return
+        self._cursor_busy = True
+        colors = {m["name"]: m["color"] for m in self.agent.get("agents") or []}
+
+        def got(ptrs) -> None:
+            self._cursor_busy = False
+            self.view.set_cursors({n: (xy[0], xy[1], colors.get(n, C["accent"])) for n, xy in ptrs.items()})
+
+        def failed(_e) -> None:
+            self._cursor_busy = False
+        bg(lambda: common.api.get(f"/api/agents/{self.name}/pointers"), got, failed)
+
+    def load_messages(self) -> None:
+        colors = {m["name"]: m["color"] for m in (self.agent or {}).get("agents") or []}
+
+        def got(msgs) -> None:
+            html = []
+            for m in msgs[-200:]:
+                c = colors.get(m["from_agent"], C["accent2"]) if m["from_space"] == self.name else C["accent2"]
+                to = m["to"] if m["to_space"] == self.name else f"{m['to_space']}/{m['to']}"
+                text = m["text"].replace("&", "&amp;").replace("<", "&lt;").replace("\n", "<br>")
+                html.append(f"<p style='margin:0 0 9px 0'><b style='color:{c}'>{m['from']}</b>"
+                            f" <span style='color:{C['dim']}'>→ {to} · {ago(m['ts'])}</span><br>{text}</p>")
+            new = "".join(html) or f"<p style='color:{C['dim']}'>No messages yet. Agents here can message each " \
+                                   "other, and the pilot passes things between spaces.</p>"
+            if new != getattr(self, "_last_msgs", None):
+                self._last_msgs = new
+                self.msgs.setHtml(new)
+                self.msgs.verticalScrollBar().setValue(self.msgs.verticalScrollBar().maximum())
+        bg(lambda: common.api.get(f"/api/agents/{self.name}/messages/history"), got, lambda _e: None)
+
     def load_side(self) -> None:
+        self.load_messages()
         n = self.name
 
         def got(res) -> None:
@@ -256,7 +360,11 @@ class AgentPage(QWidget):
             for r in reversed(reps[-100:]):
                 col = common.STATE_COLOR.get(r["status"], C["dim"])
                 msg = r["message"].replace("&", "&amp;").replace("<", "&lt;").replace("\n", "<br>")
-                html.append(f"<p style='margin:0 0 10px 0'><span style='color:{col};font-size:12px'>● {r['status']}</span>"
+                colors = {m["name"]: m["color"] for m in (self.agent or {}).get("agents") or []}
+                who = r.get("who") or self.name
+                by = (f"<b style='color:{colors.get(who, C['accent2'])}'>{who}</b> "
+                      if len(colors) > 1 else "")
+                html.append(f"<p style='margin:0 0 10px 0'>{by}<span style='color:{col};font-size:12px'>● {r['status']}</span>"
                             f" <span style='color:{C['dim']};font-size:12px'>{ago(r['ts'])}</span><br>{msg}</p>")
             new = "".join(html) or f"<p style='color:{C['dim']}'>No reports yet. Agents post progress here as they work.</p>"
             if new != getattr(self, "_last_reports", None):
@@ -361,7 +469,8 @@ class AgentPage(QWidget):
         task = self.task.text().strip()
         if not task:
             return
-        bg(lambda: common.api.post(f"/api/agents/{self.name}/run", {"task": task}),
+        agent = self.who.currentData() or ""
+        bg(lambda: common.api.post(f"/api/agents/{self.name}/run", {"task": task, "agent": agent}),
            lambda r: (self.task.clear(), self.win.toast("Task started", r.get("warning") or
                                                          "The workspace was saved first (see History)."),
                       self.win.refresh()))
@@ -375,7 +484,67 @@ class AgentPage(QWidget):
 
     def close_page(self) -> None:
         self.poll.stop()
+        self.cursor_timer.stop()
         self.view.close_view()
+
+
+class AddAgentDialog(QDialog):
+    """Add an agent to a space: it shares the desktop with its own mouse and tab."""
+
+    def __init__(self, page: "AgentPage", opts: dict) -> None:
+        super().__init__(page)
+        self.page = page
+        self.setWindowTitle(f"Add an agent to {page.name}")
+        self.setMinimumWidth(480)
+        self.setStyleSheet(f"QDialog {{ background: {C['panel']}; }}")
+        self.name = QLineEdit()
+        self.name.setPlaceholderText("Leave empty for a friendly name")
+        self.model = model_combo(opts)
+        self.role = QLineEdit()
+        self.role.setPlaceholderText("e.g. reviewer, researcher, tester")
+        self.task = QTextEdit()
+        self.task.setFixedHeight(70)
+        self.task.setPlaceholderText("Optional: what it should start on")
+        self.err = label("", wrap=True)
+        self.err.setStyleSheet(f"color:{C['red']}")
+        self.go = button("Add", "primary", self.submit)
+        self.setLayout(vbox(label(f"Add an agent to {page.name}", "h2"),
+                            vbox(label("Name", "dim"), self.name, spacing=4),
+                            vbox(label("Model / account", "dim"), self.model, spacing=4),
+                            vbox(label("Role", "dim"), self.role, spacing=4),
+                            vbox(label("Task", "dim"), self.task, spacing=4),
+                            self.err, hbox("stretch", button("Cancel", on=self.reject), self.go),
+                            spacing=10, margins=(22, 20, 22, 20)))
+
+    def submit(self) -> None:
+        model, account = self.model.currentData()
+        body = {"name": self.name.text().strip().lower(), "model": model, "account": account,
+                "role": self.role.text().strip(), "task": self.task.toPlainText().strip()}
+        self.go.setEnabled(False)
+        self.go.setText("Adding…")
+
+        def ok(r) -> None:
+            self.page.win.toast(f"{r['name']} joined {self.page.name}")
+            self.accept()
+            self.page.win.refresh()
+
+        def bad(e) -> None:
+            self.err.setText(str(e))
+            self.go.setEnabled(True)
+            self.go.setText("Add")
+        bg(lambda: common.api.post(f"/api/agents/{self.page.name}/agents", body), ok, bad)
+
+
+def model_combo(opts: dict) -> QComboBox:
+    combo = QComboBox()
+    combo.addItem("No model (just a desktop)", ("", ""))
+    for a in opts["accounts"]:
+        combo.addItem(f"{'Claude Code' if a['harness'] == 'claude' else 'Codex'} · {a['name']}", (a["harness"], a["name"]))
+    for m in opts["local_models"]:
+        combo.addItem(f"{m['name']} · {'vision' if m['vision'] else 'text only'} (local)", (f"local:{m['key']}", ""))
+    if opts["accounts"]:
+        combo.setCurrentIndex(1)
+    return combo
 
 
 class NewAgentDialog(QDialog):
@@ -389,16 +558,7 @@ class NewAgentDialog(QDialog):
         self.flavor = QComboBox()
         for f in opts.get("flavor_info") or [{"name": n, "description": ""} for n in opts["flavors"]]:
             self.flavor.addItem(f"{f['name']} · {f['description']}" if f["description"] else f["name"], f["name"])
-        self.model = QComboBox()
-        self.model.addItem("No model (just a desktop)", ("", ""))
-        for a in opts["accounts"]:
-            self.model.addItem(f"{'Claude Code' if a['harness'] == 'claude' else 'Codex'} · {a['name']}",
-                               (a["harness"], a["name"]))
-        for m in opts["local_models"]:
-            self.model.addItem(f"{m['name']} · {'vision' if m['vision'] else 'text only'} (local)",
-                               (f"local:{m['key']}", ""))
-        if opts["accounts"]:
-            self.model.setCurrentIndex(1)
+        self.model = model_combo(opts)
         self.task = QTextEdit()
         self.task.setPlaceholderText("Find three used road bikes under $500 near Boston and compare them.")
         self.task.setFixedHeight(80)
@@ -485,7 +645,11 @@ class SpacesWindow(QMainWindow):
         self.stack.addWidget(self.grid)
         root = QWidget()
         root.setObjectName("page")
-        root.setLayout(vbox(hbox(label("Hangar", "h1"), "stretch", self.dot,
+        self.ask_box = QLineEdit()
+        self.ask_box.setPlaceholderText("Ask Hangar… (the pilot answers, or puts agents on it)")
+        self.ask_box.setMinimumWidth(380)
+        self.ask_box.returnPressed.connect(self.ask)
+        root.setLayout(vbox(hbox(label("Hangar", "h1"), "stretch", self.ask_box, self.dot,
                                  button("Overview", on=lambda: self.overview and self.overview.toggle(),
                                         tip="All agents at once (F3, or the Spaces key)"),
                                  button("+ New agent", "primary", self.new_agent)),
@@ -524,7 +688,34 @@ class SpacesWindow(QMainWindow):
                 then()
         bg(lambda: common.api.get("/api/agents"), got, lambda e: self.toast("Can't load agents", str(e), True))
 
+    def ask(self) -> None:
+        q = self.ask_box.text().strip()
+        if not q:
+            return
+        self.ask_box.setEnabled(False)
+
+        def ok(r) -> None:
+            self.ask_box.clear()
+            self.ask_box.setEnabled(True)
+            self.toast("Asked the pilot", "It's queued: the pilot is busy." if r.get("queued")
+                       else "You'll get its answer here and as a notification.")
+            self.refresh()
+
+        def bad(e) -> None:
+            self.ask_box.setEnabled(True)
+            self.toast("Couldn't ask", str(e), True)
+        bg(lambda: common.api.post("/api/ask", {"question": q}), ok, bad)
+
     def on_event(self, ev: dict) -> None:
+        if ev.get("type") == "message":
+            if self.page and self.page.name in (ev.get("to_space"), ev.get("from_space")):
+                self.page.load_messages()
+            return
+        if ev.get("type") == "report" and ev.get("agent") == "pilot" and ev.get("final"):
+            self.toast("Pilot", ev.get("message", ""), ev.get("status") == "error",
+                       lambda: self.open_agent("pilot"))
+            self.debounce.start()
+            return
         if ev.get("type") == "vault":
             self.approvals.refresh()
             if ev.get("status") == "pending":
