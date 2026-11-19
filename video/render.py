@@ -30,30 +30,31 @@ SCENES = [
      "Hangar hands it to a crew of AI agents that use one, just like you do.", 0),
     ("ask", 10.5, "Hand it off the moment you think of it",
      "One shortcut, from anywhere on your computer. Type it or say it.", 12),
-    ("plan", 10.5, "A crew takes it from there",
-     "Your pilot splits the job into parts and puts an agent on each, with a computer of its own.", 6.56),
-    ("space", 12.5, "They work the way you do",
-     "Real websites, real apps, real files. If you can do it on a computer, so can they.", 6.31),
+    ("plan", 9.0, "A crew takes it from there",
+     "Your pilot splits the job into parts and puts an agent on each, with a computer of its own.", 6.89),
+    ("space", 13.5, "They work the way you do",
+     "Real websites, real apps, real files. If you can do it on a computer, so can they.", 6.54),
     ("overview", 5.0, "Many jobs at once",
      "Shopping, email, code, travel, paperwork: all moving while you get on with your day.", 4.20),
     ("approve", 4.5, "Your accounts stay yours",
-     "Agents ask before they sign in anywhere, and never see a password.", 4.29),
+     "Agents ask before they sign in anywhere, and never see a password.", 4.57),
     ("takeover", 4.0, "You're always in charge", "Watch any agent work, step in, and hand it back.", 0),
     ("review", 5.0, "Nothing happens behind your back", "See every change, and undo anything you don't like.", 0),
-    ("answer", 8.0, "Come back to finished work", "One answer, with the work already done.", 6.53),
+    ("answer", 8.0, "Come back to finished work", "One answer, with the work already done.", 6.27),
     ("notes", 5.0, "It all adds up", "What your crew finds is kept in your notes, for you and for them.", 0),
     ("private", 5.0, "It lives on your computer.",
      "Agents see only the folders you share, and can run on AI models on your own machine.", 0),
     ("outro", 5.0, "", "", 0),
 ]
 CARDS = {"why", "private"}
-# Scenes that tell two things: (seconds into the scene, title, detail) for the second caption.
-SECOND_CAPTION = {"plan": (4.6, "The right model for every job",
+# Scenes that tell two things: the first caption shows until the given second, then the
+# scene's own caption. The model one plays while the task card shows each agent's model.
+FIRST_CAPTION = {"space": (5.6, "The right model for every job",
                            "Routine work runs on a small model on your PC, free and private. "
                            "Only the parts that need more go to a bigger model.")}
 SAME_WINDOW = {"plan", "space", "overview", "approve", "takeover", "review", "answer"}
 # The pilot hands each agent its own job as the space scene opens (seconds into the scene).
-ASSIGN = {"space": (0.8, 4.4, [("#7c9cff", "bikes", "Search PedalSwap for 56 cm road bikes under $500",
+ASSIGN = {"space": (0.8, 5.4, [("#7c9cff", "bikes", "Search PedalSwap for 56 cm road bikes under $500",
                                  "Qwen3.5 9B · on this PC"),
                                 ("#f472b6", "wren", "Read reviews of the most promising models", "Claude")])}
 SETUP_STEPS = ["setup-0-welcome", "setup-2-accounts", "setup-3-models", "setup-4-pilot", "setup-5-notify",
@@ -370,10 +371,10 @@ def main() -> None:
                 a0, a1, rows = ASSIGN[s.name]
                 draw_assign(p, rows, min(ease((lt - a0) / 0.35), ease((a1 - lt) / 0.35)))
             if s.name not in CARDS:
-                if s.name in SECOND_CAPTION:
-                    t2, title2, detail2 = SECOND_CAPTION[s.name]
-                    draw_caption(p, s.title, s.detail, min(ta, ease((t2 - 0.25 - lt) / 0.3)))
-                    draw_caption(p, title2, detail2, min(ta, ease((lt - t2) / 0.4)) if lt > t2 else 0)
+                if s.name in FIRST_CAPTION:
+                    t2, title1, detail1 = FIRST_CAPTION[s.name]
+                    draw_caption(p, title1, detail1, min(ta, ease((t2 - 0.25 - lt) / 0.3)))
+                    draw_caption(p, s.title, s.detail, min(ta, ease((lt - t2) / 0.4)) if lt > t2 else 0)
                 else:
                     draw_caption(p, s.title, s.detail, ta)
         p.end()

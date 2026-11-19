@@ -61,9 +61,11 @@ RESULT = [
     ("report", "Shortlist saved to your Notes. Messaged the Trek's seller about a test ride on Saturday.",
      {"space": "bikes", "who": "bikes", "status": "done"}),
     ("pilot", "Here's your shortlist, all 56 cm and within 15 miles:\n\n"
-              "1. **Trek Domane AL 2** (2021), $450 in Somerville: newest, new chain and bar tape\n"
-              "2. **Specialized Allez** (2019), $420 in Cambridge: lightest of the three\n"
-              "3. **Cannondale CAAD8** (2016), $380 in Brookline: cheapest, older groupset\n\n"
+              "1. **[Trek Domane AL 2](https://pedalswap.com/l/48213)** (2021), $450 in Somerville: newest, "
+              "new chain and bar tape\n"
+              "2. **[Specialized Allez](https://pedalswap.com/l/47790)** (2019), $420 in Cambridge: lightest of the three\n"
+              "3. **[Cannondale CAAD8](https://pedalswap.com/l/46102)** (2016), $380 in Brookline: cheapest, "
+              "older groupset\n\n"
               "I messaged the Trek's seller asking about a test ride on Saturday. The full comparison "
               "is in your Notes as *Road bike shortlist*.", {"status": "done"}),
 ]
@@ -71,9 +73,9 @@ NOTES = {
     "Agents/bikes/Road bike shortlist.md":
         "# Road bike shortlist\n\nUsed road bikes under $500 near Boston, 56 cm frame. #bikes\n\n"
         "| Bike | Price | Year | Where | Notes |\n|---|---|---|---|---|\n"
-        "| **Trek Domane AL 2** | $450 | 2021 | Somerville | new chain and bar tape; seller messaged |\n"
-        "| Specialized Allez | $420 | 2019 | Cambridge | lightest, Sora groupset |\n"
-        "| Cannondale CAAD8 | $380 | 2016 | Brookline | cheapest, needs new tyres |\n\n"
+        "| **[Trek Domane AL 2](https://pedalswap.com/l/48213)** | $450 | 2021 | Somerville | new chain and bar tape; seller messaged |\n"
+        "| [Specialized Allez](https://pedalswap.com/l/47790) | $420 | 2019 | Cambridge | lightest, Sora groupset |\n"
+        "| [Cannondale CAAD8](https://pedalswap.com/l/46102) | $380 | 2016 | Brookline | cheapest, needs new tyres |\n\n"
         "Checks for the test ride come from [[Buying a used bike]].\n",
     "Buying a used bike.md": "# Buying a used bike\n\n- Chain wear, brake pads, wheel wobble\n- Ask for the "
                              "service history\n- See [[Road bike shortlist]]\n",
