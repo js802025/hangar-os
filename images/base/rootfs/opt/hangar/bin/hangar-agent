@@ -28,11 +28,19 @@ date -u +%FT%TZ > "$MINE/task-started"
 # Wait for the desktop MCP server.
 for _ in $(seq 1 60); do curl -fsS -m 1 http://127.0.0.1:8765/healthz >/dev/null && break; sleep 0.5; done
 
-SYS="You are $ME, an agent running inside Hangar on a private Linux desktop (a container; nothing
-you do touches the user's screen). Desktop and browser tools come from the 'hangar' MCP
-server: for websites prefer browser_navigate / browser_snapshot / browser_click /
-browser_type (numbered elements); for desktop apps app_snapshot / app_click / app_type;
-screenshot + click for anything else. Files go in /home/agent/workspace.
+SYS="You are $ME, an agent running inside Hangar on a private Linux computer (a container with
+a desktop; nothing you do touches the user's screen). Files go in /home/agent/workspace.
+Do the work the cheapest reliable way, in this order:
+1. Commands and files: your own shell and file tools (or the hangar run_command, read_file,
+   write_file tools), for data, downloads, scripts and documents. Write files by command,
+   never by typing into an editor.
+2. The web without a browser: your own web search / fetch tools (or hangar web_search and
+   web_fetch) to find and read pages and APIs.
+3. Element-based tools when something needs real input: browser_navigate / browser_snapshot /
+   browser_click / browser_type (numbered elements) for sites with forms, sign-ins or pages
+   that only work in a browser; app_snapshot / app_click / app_type for desktop apps.
+4. Computer use (screenshot + click / type) only when nothing above can do it.
+Read your 'hangar' skill first: it explains this computer, its tools and its limits.
 Nobody is watching to answer questions: work autonomously.
 ${HANGAR_ROLE:+Your role: $HANGAR_ROLE
 }Teammates may share this desktop: you have your own mouse, keyboard and browser tab. If a
@@ -42,7 +50,13 @@ other spaces), and read_messages() now and then.
 To sign in to a website, open its sign-in page and call the hangar request_login tool
 (and request_code for verification codes): the user approves and Hangar fills it in.
 Never ask for, guess or type passwords yourself.
-Post short progress updates with the hangar report tool, and finish with
+${HANGAR_COMPUTER:+(Hangar for Mac) Your screen is not this Linux desktop: it is a Mac (macOS VM).
+Steps 1 and 2 still run here in your container. There are no browser or app tools: for
+step 3 and 4, drive the Mac with screenshot / click / type_text / key / scroll, using Mac
+shortcuts (cmd+space to open apps), and only for Mac apps or pages that need input. There is
+no request_login on the Mac: if a site needs signing in, report waiting_on_user and ask the
+user to sign in.
+}Post short progress updates with the hangar report tool, and finish with
 report(message=<summary>, status=\"done\", final=true), or status=\"waiting_on_user\"
 with final=true if you need the user."
 
@@ -50,12 +64,14 @@ if [[ "${HANGAR_PILOT:-}" == 1 ]]; then
   SYS="$SYS
 
 You are the PILOT: the user's main agent. The 'control' MCP server lets you run
-other agents. For each request:
+other agents; your 'hangar-pilot' skill explains how to plan, staff and answer. For each request:
 - If you can answer it directly and quickly, just answer.
 - Otherwise plan the work and create spaces/agents with control tools (models() shows
   which models you may use and the limits). One space = one shared desktop; put agents
   that work on the same thing in the same space, each with a clear role and task.
   Never give two agents work in the same window or app of one space: split by app or tab.
+- Ask agents for results, not clicks: they work by command and web fetch first and use
+  the screen only when a site or app needs it, so say what you need, not how to click.
 - Give each agent the most efficient model that can do its task (models() lists them cheapest
   first with what each is good at): small local models for routine browsing, reading and forms;
   a model that sees the screen for visual work; cloud models only for judgement, writing, code
@@ -66,6 +82,18 @@ other agents. For each request:
 - You can't approve password requests or widen a space's internet access: the user does.
 - When done, give the user one clear answer with report(final=true)."
 fi
+
+# Hangar's skills: how to use this system (and, for the pilot, how to run the crew).
+# Claude loads them as plugins for this session; Codex finds them in ~/.agents/skills;
+# local models get them in their system prompt.
+PLUGINS=/opt/hangar/plugins
+SKILLS=(hangar); [[ "${HANGAR_PILOT:-}" == 1 ]] && SKILLS+=(hangar-pilot)
+mkdir -p "$HOME/.agents/skills"
+for sk in hangar hangar-pilot; do rm -rf "$HOME/.agents/skills/$sk"; done
+for sk in "${SKILLS[@]}"; do cp -r "$PLUGINS/$sk/skills/$sk" "$HOME/.agents/skills/"; done
+skill_text() {   # the skills' bodies, without their front matter
+  for sk in "${SKILLS[@]}"; do echo; awk 'NR==1 && /^---$/ {f=1; next} f && /^---$/ {f=0; next} !f' "$PLUGINS/$sk/skills/$sk/SKILL.md"; done
+}
 
 finals() { local n; n=$(grep -c "\"who\": \"$ME\".*\"final\": true" "$STATE/reports.jsonl" 2>/dev/null); echo "${n:-0}"; }
 finals_before=$(finals)
@@ -94,8 +122,9 @@ case "$MODEL" in
     CONT=(); [[ "${HANGAR_CONTINUE:-}" == 1 ]] && CONT=(--continue)
     [[ -n "${HANGAR_ATTACH:-}" ]] && TASK="$TASK
 (Look at the attached image with your Read tool: $HANGAR_ATTACH)"
+    PDIRS=(); for sk in "${SKILLS[@]}"; do PDIRS+=(--plugin-dir "$PLUGINS/$sk"); done
     claude -p "$TASK" "${CONT[@]}" ${sub:+--model "$sub"} \
-      --mcp-config "$MCPCFG" --dangerously-skip-permissions \
+      --mcp-config "$MCPCFG" --dangerously-skip-permissions "${PDIRS[@]}" \
       --append-system-prompt "$SYS" --output-format stream-json --verbose
     code=$?
     # Claude reports failures (bad key, expired login, usage limits) in its result line.
@@ -123,7 +152,8 @@ Task: $TASK"
     code=$?
     ;;
   local:*)
-    hangar-local-agent --model "${MODEL#local:}" --system "$SYS" "$TASK"
+    hangar-local-agent --model "${MODEL#local:}" --system "$SYS
+$(skill_text)" "$TASK"
     code=$?
     ;;
   *)

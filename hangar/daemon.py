@@ -48,7 +48,7 @@ from hangar import pilot as pilot_mod
 from hangar.messages import PILOT, Bus, route
 
 CONDUCTOR_SPACE = PILOT
-from hangar.engine import DAEMON_PORT, LABEL, Agent, Engine
+from hangar.engine import DAEMON_PORT, LABEL, RUNTIME, Agent, Engine
 
 HOST = os.environ.get("HANGAR_DAEMON_HOST", "127.0.0.1")
 COOKIE = "hangar_token"
@@ -93,7 +93,7 @@ def agent_dict(a: Agent) -> dict:
     return {"name": a.name, "state": st["state"], "status": a.status, "flavor": a.flavor,
             "model": a.model, "account": a.account, "task": st["task"], "report": st["report"],
             "created": a.created, "shares": a.shares, "agents": st.get("agents", []),
-            "network": a.network, "view": f"/agents/{a.name}/view",
+            "network": a.network, "computer": a.computer, "vm": a.vm, "view": f"/agents/{a.name}/view",
             "mcp": f"/agents/{a.name}/mcp"}
 
 
@@ -127,6 +127,7 @@ class AdminAuth:
         path, method = scope["path"], scope.get("method", "GET")
         parts = path.split("/")
         agent_route = len(parts) == 5 and parts[1:3] == ["api", "agents"] and parts[4] in ("messages", "team")
+        agent_route = agent_route or (len(parts) == 6 and parts[1:3] == ["api", "agents"] and parts[4] == "computer")
         if (path in self.OPEN or path.startswith("/ui/") or vault_api.is_agent_route(path) or agent_route
                 or notes_api.is_agent_route(path)
                 or path.startswith("/pilot/")
@@ -190,6 +191,14 @@ async def screenshot(request: Request) -> Response:
     if hit and time.time() - hit[0] < 1.5:      # many viewers, one grab
         return Response(hit[1], media_type="image/png")
     a = await get_agent(name)
+    if a and a.vm and a.status == "running":           # a Mac computer (Hangar for Mac)
+        from hangar import macvm
+        try:
+            png = await run_in_threadpool(macvm.screenshot, a.vm, w)
+        except macvm.MacVMError as e:
+            return PlainTextResponse(str(e), status_code=502)
+        _shots[(name, w)] = (time.time(), png)
+        return Response(png, media_type="image/png", headers={"Cache-Control": "no-store"})
     if not a or not a.mcp_port or a.status != "running":
         return not_found(name)
     async with httpx.AsyncClient() as http:
@@ -199,6 +208,31 @@ async def screenshot(request: Request) -> Response:
         return PlainTextResponse(f"screenshot failed: {r.status_code}", status_code=502)
     _shots[(name, w)] = (time.time(), r.content)
     return Response(r.content, media_type="image/png", headers={"Cache-Control": "no-store"})
+
+
+async def computer(request: Request) -> Response:
+    """Input on a space's Mac computer, forwarded by its agents' screen tools."""
+    from hangar import macvm
+    if not agent_or_admin(request):
+        return JSONResponse({"error": "bad token"}, status_code=401)
+    a = await get_agent(request.path_params["name"])
+    if not a or not a.vm:
+        return JSONResponse({"error": "this space has no Mac computer"}, status_code=404)
+    act = request.path_params["action"]
+    if act == "screenshot":
+        try:
+            w = min(int(request.query_params.get("w", "0") or 0), 4000)
+            return Response(await run_in_threadpool(macvm.screenshot, a.vm, w), media_type="image/png",
+                            headers={"Cache-Control": "no-store"})
+        except (ValueError, macvm.MacVMError) as e:
+            return JSONResponse({"error": str(e)}, status_code=502)
+    if act not in macvm.ACTIONS:
+        return JSONResponse({"error": f"unknown action {act}"}, status_code=404)
+    body = await request.json() if request.method == "POST" else {}
+    try:
+        return JSONResponse(await run_in_threadpool(macvm.act, a.vm, act, body if isinstance(body, dict) else {}))
+    except macvm.MacVMError as e:
+        return JSONResponse({"error": str(e)}, status_code=502)
 
 
 async def logs(request: Request) -> Response:
@@ -494,6 +528,9 @@ def watch_engine() -> None:
 async def lifespan(app):
     hub.loop = asyncio.get_running_loop()
     threading.Thread(target=watch_engine, daemon=True).start()
+    if RUNTIME == "apple":        # Hangar for Mac: agents' VMs reach us through the vmnet gateway
+        from hangar import apple, models
+        apple.relay([DAEMON_PORT, models.PORT])
     log(f"hangar daemon on http://{web.state.host}:{DAEMON_PORT}  (state: {auth.STATE_DIR})")
     async with control.session_manager.run():
         yield
@@ -695,6 +732,7 @@ web = Starlette(routes=[
     Route(A, show_agent),
     Route(f"{A}/screenshot.png", screenshot),
     Route(f"{A}/logs", logs),
+    Route(f"{A}/computer/{{action}}", computer, methods=["GET", "POST"]),
     Route(f"{A}/reports", get_reports, methods=["GET"]),
     Route(f"{A}/reports", post_report, methods=["POST"]),
     *(Route(f"{A}/{fn.__name__}", action(fn), methods=["POST"])

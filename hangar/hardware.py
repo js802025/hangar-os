@@ -23,6 +23,8 @@ def _run(*cmd: str) -> str:
 
 def _docker_vm_gb() -> float:
     """On a Mac, Docker Desktop's VM holds its memory whether or not agents use it."""
+    if os.environ.get("HANGAR_RUNTIME") == "apple":     # Apple's container: a small VM per agent, no shared one
+        return 0.0
     out = _run("docker", "info", "--format", "{{.MemTotal}}") if shutil.which("docker") else ""
     try:
         return int(out) / 2**30

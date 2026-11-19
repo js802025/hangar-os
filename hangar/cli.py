@@ -109,6 +109,7 @@ def new(
     cpus: float = typer.Option(2.0, help="CPU cap"),
     memory: str = typer.Option("4g", help="Memory cap, e.g. 4g"),
     screen: str = typer.Option("1280x800", help="Desktop size WxH"),
+    computer: str = typer.Option("linux", help="linux, or mac[:VM] for a macOS VM (Hangar for Mac; see `hangar mac`)"),
     view: bool = typer.Option(False, "--view", help="Open the live view when ready"),
 ):
     """Create and start an agent."""
@@ -119,7 +120,7 @@ def new(
         con.print(f"[red]{e}[/]")
         raise typer.Exit(1)
     spec = AgentSpec(name=name, flavor=flavor, model=model, account=account, task=task, shares=share, allow=allow_list,
-                     cpus=cpus, memory=memory, screen=screen)
+                     cpus=cpus, memory=memory, screen=screen, computer=computer)
     configure_model(spec)
     try:
         with con.status(f"Starting {name}…"):
@@ -464,7 +465,8 @@ def rollback(name: str, snapshot_id: str = typer.Argument(None, help="Default: t
 def shell(name: str):
     """Open a shell inside an agent's container."""
     agent_or_exit(name)
-    cli = shutil.which("podman") or shutil.which("docker")
+    from hangar.engine import cli_binary
+    cli = cli_binary()
     if not cli:
         con.print("[red]Neither podman nor docker CLI found.[/]")
         raise typer.Exit(1)
@@ -608,6 +610,37 @@ def accounts_remove(name: str, yes: bool = typer.Option(False, "-y", "--yes")):
 
 daemon_app = typer.Typer(help="The local daemon (reports, notifications, live views).",
                          invoke_without_command=True)
+mac_app = typer.Typer(help="Mac computers for agents (Hangar for Mac): macOS VMs via terminal-mac.",
+                      no_args_is_help=True)
+app.add_typer(mac_app, name="mac")
+
+
+@mac_app.command("setup")
+def mac_setup(vm: str = typer.Argument("hangar-mac", help="Name for the VM")):
+    """Prepare a Mac computer: downloads macOS and opens its window, where you
+    finish setup as on a new Mac (turn on automatic login so agents never wait)."""
+    from hangar import macvm
+    try:
+        cmd = macvm.setup_command(vm)
+    except macvm.MacVMError as e:
+        con.print(f"[red]{e}[/]")
+        raise typer.Exit(1)
+    raise typer.Exit(subprocess.call(cmd))
+
+
+@mac_app.command("status")
+def mac_status(vm: str = typer.Argument("hangar-mac")):
+    """Whether a Mac computer is running and ready, and which space has it."""
+    from hangar import macvm
+    try:
+        st = macvm.status(vm)
+    except macvm.MacVMError as e:
+        con.print(f"[red]{e}[/]")
+        raise typer.Exit(1)
+    user = next((a.name for a in eng().list() if a.vm == vm), "")
+    print(json.dumps({**st, "space": user}, indent=2))
+
+
 app.add_typer(daemon_app, name="daemon")
 
 

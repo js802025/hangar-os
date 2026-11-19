@@ -25,12 +25,14 @@ import httpx
 from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
 
-SYSTEM = """You are an autonomous agent working on a private Linux desktop inside Hangar.
+SYSTEM = """You are an autonomous agent working on a private Linux computer inside Hangar.
 Use the tools to get the task done; nobody is watching to answer questions.
-- For websites use the browser_* tools: browser_navigate(url), then use the
-  numbered elements from the snapshot with browser_click / browser_type.
+Work the cheapest reliable way, in this order:
+- Commands and files first: run_command, read_file, write_file (in /home/agent/workspace).
+- Then the web without a browser: web_search, then web_fetch to read a page or API.
+- Only when a site needs input (forms, sign-ins) or JavaScript, use the browser_* tools:
+  browser_navigate(url), then the numbered elements with browser_click / browser_type.
 - {vision_line}
-- Work in /home/agent/workspace for files.
 - To sign in to a site, open its sign-in page and call request_login(site, reason);
   for verification codes call request_code(site, reason). Never ask for passwords.
 - Post short progress updates with report(message). When finished, call
@@ -38,8 +40,10 @@ Use the tools to get the task done; nobody is watching to answer questions.
   If you are stuck or need the user, call report(..., status="waiting_on_user", final=True).
 Be efficient: act, don't narrate."""
 
-VISION = "Use screenshot() to see the desktop, and click/type for non-web apps."
-NO_VISION = "You cannot see images, so rely on browser_snapshot / browser_text."
+VISION = ("For desktop apps use app_snapshot / app_click / app_type; screenshot() and "
+          "click/type only as a last resort.")
+NO_VISION = ("You cannot see images: rely on web_fetch, browser_snapshot / browser_text and "
+             "app_snapshot.")
 IMAGE_TOOLS = {"screenshot"}
 KEEP_IMAGES = 2           # only the latest screenshots stay in context
 OLD_RESULT_CHARS = 1500   # older tool results get trimmed to this

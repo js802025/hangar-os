@@ -15,13 +15,12 @@ from __future__ import annotations
 
 import json
 import re
-import shutil
 import time
 
 from docker.errors import APIError, NotFound
 
 from hangar import auth
-from hangar.engine import BASE_IMAGE, Engine
+from hangar.engine import BASE_IMAGE, Engine, run_argv
 
 CACHE = auth.STATE_DIR / "harness-complete.json"
 
@@ -117,13 +116,11 @@ def prepare_install(eng: Engine, name: str, version: str = "") -> tuple[str, lis
         pass
     eng.client.volumes.create(vol, labels={LABEL: name, f"{LABEL}.version": version,
                                            f"{LABEL}.created": str(time.time())})
-    cli = shutil.which("podman") or shutil.which("docker")
-    if not cli:
-        raise RuntimeError("needs the docker or podman CLI on PATH")
     script = (f"npm install -g --no-fund --no-audit --prefix /h {pkg}@{version} && "
               "chmod -R a+rX /h && touch /h/.hangar-complete && echo 'Installed.'")
-    argv = [cli, "run", "--rm", "-t", "--user", "root", "-v", f"{vol}:/h", "--entrypoint", "",
-            BASE_IMAGE, "bash", "-c", script]
+    argv = run_argv(["--rm", "-t", "--user", "root", "-v", f"{vol}:/h"], BASE_IMAGE, ["bash", "-c", script])
+    if not argv:
+        raise RuntimeError("needs the docker or podman CLI on PATH")
     return vol, argv
 
 

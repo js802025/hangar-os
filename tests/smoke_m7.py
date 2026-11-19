@@ -122,6 +122,19 @@ def test_network() -> None:
     asyncio.run(mcp("m7-net", browse))
     print("3b. the agent's browser goes through the gateway too: ok")
 
+    async def fetch(call):
+        ok = await call("web_fetch", url="https://example.com")
+        assert "Example Domain" in ok, ok[:300]
+        try:
+            bad = await call("web_fetch", url="https://en.wikipedia.org/wiki/Hangar")
+        except RuntimeError as e:
+            bad = str(e)
+        assert "Hangar - Wikipedia" not in bad and "aircraft" not in bad, bad[:300]
+        out = await call("run_command", command="curl -s -o /dev/null -w '%{http_code}' https://en.wikipedia.org")
+        assert "200" not in out, out
+    asyncio.run(mcp("m7-net", fetch))
+    print("3b'. web_fetch and run_command obey the allowlist too: ok")
+
     network.write_allow("m7-net", network.read_allow("m7-net") + ["wikipedia.org"])
     assert code("https://www.wikipedia.org").startswith(("200", "301")), code("https://www.wikipedia.org")
     hosts = {e["host"] for e in network.recent(eng.client, "m7-net") if e["action"] == "BLOCK"}

@@ -1,6 +1,8 @@
 """Container engine: runs agent containers on Docker (Mac dev) or Podman (target).
 
-Both speak the Docker API, so one code path covers them. Each agent is one
+Both speak the Docker API, so one code path covers them. Hangar for Mac sets
+HANGAR_RUNTIME=apple to use Apple's container instead (hangar/apple.py, a
+stand-in for the Docker SDK); Hangar OS never does. Each agent is one
 container named `hangar-<name>` with:
   - its own hidden X display, browser profile and home volume (nothing shared),
   - noVNC and MCP published only on 127.0.0.1, on ports the engine picks
@@ -14,6 +16,7 @@ import base64
 import json
 import os
 import re
+import shutil
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -33,8 +36,27 @@ BASE_IMAGE = os.environ.get("HANGAR_BASE_IMAGE", IMAGES.format(name="base"))
 NOVNC_PORT, MCP_PORT = 6080, 8765
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,30}$")
 DAEMON_PORT = int(os.environ.get("HANGAR_DAEMON_PORT", "7700"))
+RUNTIME = os.environ.get("HANGAR_RUNTIME", "docker")       # "docker" (Docker or Podman) | "apple"
 # How agents reach the daemon to post reports.
 DAEMON_AGENT_URL = os.environ.get("HANGAR_DAEMON_AGENT_URL", f"http://hangar-host:{DAEMON_PORT}")
+
+
+def cli_binary() -> str | None:
+    """The container CLI, for the few interactive commands that need a TTY."""
+    if RUNTIME == "apple":
+        from hangar import apple
+        return apple.cli()
+    return shutil.which("podman") or shutil.which("docker")
+
+
+def run_argv(opts: list[str], image: str, cmd: list[str]) -> list[str] | None:
+    """`<cli> run <opts> <image> <cmd>` with the image's entrypoint turned off."""
+    exe = cli_binary()
+    if not exe:
+        return None
+    if RUNTIME == "apple":            # Apple's CLI has no empty --entrypoint: make the command it
+        return [exe, "run", *opts, "--entrypoint", cmd[0], image, *cmd[1:]]
+    return [exe, "run", *opts, "--entrypoint", "", image, *cmd]
 
 
 def _socket_url() -> str | None:
@@ -105,6 +127,7 @@ class AgentSpec:
     cpus: float = 2.0
     memory: str = "4g"
     screen: str = "1280x800"
+    computer: str = "linux"   # "linux" (its own desktop) or "mac[:VM]" (a macOS VM, Hangar for Mac only)
 
 
 @dataclass
@@ -122,6 +145,8 @@ class Agent:
     created: str = ""
     shares: list[str] = field(default_factory=list)
     network: str = "open"     # "open" or "allowlist"
+    computer: str = "linux"   # "linux", or "mac" when its screen is a macOS VM
+    vm: str = ""              # that VM's name
 
     # Direct (host-only) addresses. Both need the agent's token; users go
     # through the daemon instead (hangar view / the Spaces UI).
@@ -144,6 +169,10 @@ class Agent:
 
 class Engine:
     def __init__(self) -> None:
+        if RUNTIME == "apple":
+            from hangar import apple
+            self.client = apple.Client()
+            return
         url = _socket_url()
         self.client = docker.DockerClient(base_url=url) if url else docker.from_env()
 
@@ -168,6 +197,8 @@ class Engine:
                "HANGAR_AGENT_TOKEN": auth.agent_token(spec.name), "HANGAR_DAEMON_URL": DAEMON_AGENT_URL,
                **spec.env}
         env["HANGAR_AGENT_NAME"] = spec.name           # the space's first agent is named after it
+        if spec.computer != "linux":
+            self._attach_mac(spec, labels, env)
         if spec.task and spec.model:
             env["HANGAR_AGENT_CMD"] = f"hangar-agent --agent {spec.name}"   # start once the desktop is up
         # Empty host port = engine picks a free one. Bound to localhost only.
@@ -205,6 +236,25 @@ class Engine:
         from hangar import spaces
         spaces.record_first(spec.name, spec.model, spec.account)
         return self.get(spec.name, container=c)
+
+    def _attach_mac(self, spec: AgentSpec, labels: dict, env: dict) -> None:
+        """Lend a macOS VM to the space as its screen (see hangar/macvm.py)."""
+        from hangar import macvm
+        kind, _, vm = spec.computer.partition(":")
+        if kind != "mac":
+            raise ValueError("computer: linux, or mac[:VM]")
+        vm = vm or macvm.DEFAULT_VM
+        if not NAME_RE.match(vm):
+            raise ValueError("VM name: lowercase letters, digits and dashes")
+        for a in self.list():
+            if a.vm == vm:
+                raise ValueError(f"the Mac computer {vm} is already in use by '{a.name}'")
+        try:
+            macvm.start(vm)
+        except macvm.MacVMError as e:      # e.g. on Hangar OS, where there are no Mac computers
+            raise ValueError(str(e)) from None
+        labels[f"{LABEL}.computer"], labels[f"{LABEL}.vm"] = "mac", vm
+        env["HANGAR_COMPUTER"] = "mac"
 
     def recreate(self, name: str, extra_volumes: dict) -> None:
         """Replace a space's container with the same settings plus extra mounts
@@ -268,6 +318,8 @@ class Engine:
             created=c.attrs.get("Created", "")[:19].replace("T", " "),
             shares=json.loads(c.labels.get(f"{LABEL}.shares", "[]")),
             network=net_mode,
+            computer=c.labels.get(f"{LABEL}.computer", "linux"),
+            vm=c.labels.get(f"{LABEL}.vm", ""),
         )
 
     def flavors(self) -> list[dict]:
@@ -410,8 +462,23 @@ class Engine:
                             "report": x.get("report")})
         return {"state": st(rt["busy"], r), "task": rt["task"] or a.task, "report": r, "agents": members}
 
+    def _vm(self, name: str, fn: str) -> None:
+        """Start or stop a space's Mac computer along with it (Mac spaces only)."""
+        try:
+            vm = self.get(name).vm
+        except NotFound:
+            return
+        if vm:
+            from hangar import macvm
+            try:
+                getattr(macvm, fn)(vm)
+            except macvm.MacVMError:
+                if fn == "start":
+                    raise
+
     def stop(self, name: str) -> None:
         from hangar import network
+        self._vm(name, "stop")
         self.client.containers.get(f"hangar-{name}").stop(timeout=5)
         gw = network.gateway(self.client, name)
         if gw:
@@ -422,10 +489,12 @@ class Engine:
         gw = network.gateway(self.client, name)
         if gw:
             gw.start()
+        self._vm(name, "start")
         self.client.containers.get(f"hangar-{name}").start()
 
     def destroy(self, name: str, keep_home: bool = False) -> None:
         from hangar import network
+        self._vm(name, "stop")
         try:
             self.client.containers.get(f"hangar-{name}").remove(force=True)
         except NotFound:

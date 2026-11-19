@@ -125,6 +125,8 @@ hangar/apps/ask.py, capture.py, voice.py      Ask Hangar: panel + tray, screen/w
 images/flavors/    research, coding, office (add your own)
 images/gateway/    the per-agent egress gateway
 os/                Hangar OS: Containerfile, files layered into it, branding, ISO config
+mac/               Hangar for Mac (early): design, the menu bar app (HangarMac/), bin/hangar
+hangar/apple.py, macvm.py   Mac only: Apple's container as the engine; macOS VMs as agents' screens
 .github/workflows/ CI: agent images (multi-arch) and the OS image + ISO
 hangar/            Python package: engine.py (containers), cli.py (`hangar`),
                    daemon.py (API + proxies), manage_api.py (UI's API),

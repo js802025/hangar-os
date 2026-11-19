@@ -178,11 +178,13 @@ def build(eng: Engine, bus: Bus) -> FastMCP:
 
     @mcp.tool()
     async def create_space(name: str, agents: list[dict], flavor: str = "base",
-                           sites: list[str] | None = None) -> str:
+                           sites: list[str] | None = None, computer: str = "linux") -> str:
         """Create a space (one shared desktop) with a team of agents and start their tasks.
         agents: [{"name": optional, "model": "...", "account": optional, "role": "...", "task": "..."}].
         flavor: base | research | coding | office. sites: domains the space may reach (used when
-        the user's policy limits new spaces' internet; ignored when it's open)."""
+        the user's policy limits new spaces' internet; ignored when it's open).
+        computer: "linux" (default, right for nearly everything) or "mac": a macOS virtual
+        machine, only on Hangar for Mac, only for work that needs Mac apps (at most 2 at once)."""
         if not agents:
             raise ValueError("give the space at least one agent")
         o = load()
@@ -196,7 +198,7 @@ def build(eng: Engine, bus: Bus) -> FastMCP:
         first = agents[0]
         spec = AgentSpec(name=name, flavor=flavor, model=first["model"], account=first.get("account", ""),
                          allow=list(sites or []) if o["internet"] == "allowlist" else None,
-                         labels={CREATED_BY: PILOT})
+                         labels={CREATED_BY: PILOT}, computer=computer or "linux")
 
         def make():
             prepare(eng, spec)

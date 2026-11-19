@@ -6,7 +6,7 @@ FLAVORS  ?= research coding office
 
 GATEWAY  ?= localhost/hangar-gateway:dev
 
-.PHONY: help base base-multiarch flavors flavor gateway images smoke clean
+.PHONY: help base base-multiarch flavors flavor gateway images mac-images smoke clean
 
 help:
 	@echo "make base            build the base agent image for this machine"
@@ -15,6 +15,7 @@ help:
 	@echo "make flavor F=office build one flavor"
 	@echo "make gateway         build the egress gateway used by agents with an allowlist"
 	@echo "make images          base + gateway + every flavor"
+	@echo "make mac-images      the same, for Hangar for Mac (Apple's container)"
 	@echo "make smoke           M1 smoke test: start an agent, drive it over MCP"
 	@echo "make clean           remove all hangar agent containers and volumes"
 
@@ -28,6 +29,9 @@ gateway:
 	$(ENGINE) build -t $(GATEWAY) -f images/gateway/Containerfile images/gateway
 
 images: base gateway flavors
+
+mac-images:
+	$(MAKE) images ENGINE=container
 
 flavors:
 	@for f in $(FLAVORS); do $(MAKE) --no-print-directory flavor F=$$f || exit 1; done

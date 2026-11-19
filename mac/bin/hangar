@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Hangar for Mac: the `hangar` CLI with agents on Apple's container (one small
+# Linux VM each, no Docker Desktop) and Mac computers available. Hangar OS
+# never uses this; it runs agents on Podman.
+set -euo pipefail
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo="$(cd "$here/../.." && pwd)"
+export HANGAR_RUNTIME=apple
+if ! command -v container >/dev/null; then
+    echo "Hangar for Mac needs Apple's container: brew install container" >&2
+    exit 1
+fi
+if ! container system status >/dev/null 2>&1; then
+    container system start --enable-kernel-install >&2
+fi
+exec uv run --project "$repo" hangar "$@"

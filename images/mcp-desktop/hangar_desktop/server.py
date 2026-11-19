@@ -64,12 +64,14 @@ def inp():
 mcp = FastMCP(
     "hangar-desktop",
     instructions=(
-        "You control a private Linux desktop (X11, Openbox). Take a screenshot "
-        "to see it; coordinates are screen pixels from the top-left. "
-        "For web pages prefer the browser_* tools: browser_navigate, then "
-        "browser_snapshot gives numbered elements to browser_click/browser_type; "
-        "fall back to screenshot + click for canvases and odd widgets. For desktop apps use "
-        "app_snapshot / app_click / app_type the same way. To sign in to a site, open "
+        "You have a private Linux computer (a container with a desktop). Do the work the "
+        "cheapest reliable way, in this order: (1) run_command, read_file, write_file for "
+        "files, data, downloads and scripts; (2) web_search and web_fetch to find and read "
+        "pages and APIs; (3) the browser_* tools (browser_navigate, then numbered elements "
+        "for browser_click/browser_type) only when a site needs input or JavaScript, and "
+        "app_snapshot / app_click / app_type for desktop apps; (4) screenshot + click/type "
+        "(computer use) only when nothing else can do it, like canvases and odd widgets. "
+        "Coordinates are screen pixels from the top-left. To sign in to a site, open "
         "its sign-in page and call request_login; for verification codes call request_code. "
         "Never ask for or type passwords yourself. Call `report` to post progress, "
         "and `report(final=True)` with a summary when you finish or get stuck."
@@ -105,7 +107,9 @@ def _screen_size() -> tuple[int, int]:
 
 @mcp.tool()
 def screenshot() -> Image:
-    """Capture the whole desktop as a PNG."""
+    """Capture the whole desktop as a PNG. Computer use is the last resort: prefer
+    run_command / web_fetch, then browser_snapshot or app_snapshot, which read the
+    screen as text."""
     return Image(data=_grab_png(), format="png")
 
 
@@ -148,7 +152,7 @@ def _input_call(fn, *a):
 @mcp.tool()
 def click(x: int, y: int, ctx: Context, button: str = "left", clicks: int = 1) -> str:
     """Move your mouse to (x, y) and click. button: left | middle | right. Clicking a
-    window also puts your keyboard in it."""
+    window also puts your keyboard in it. Only when browser_click / app_click can't."""
     _guard()
     btn = {"left": 1, "middle": 2, "right": 3}[button]
     _input_call(inp().click, who(ctx), x, y, btn, clicks)
@@ -173,7 +177,8 @@ def drag(x1: int, y1: int, x2: int, y2: int, ctx: Context) -> str:
 
 @mcp.tool()
 def type_text(text: str, ctx: Context) -> str:
-    """Type text into the window your keyboard is in (click it first)."""
+    """Type text into the window your keyboard is in (click it first). To write a
+    file, use write_file instead."""
     _guard()
     _input_call(inp().type_text, who(ctx), text)
     return f"typed {len(text)} characters"
@@ -383,8 +388,16 @@ def notes_write(path: str, text: str, ctx: Context, append: bool = False) -> str
 from hangar_desktop import browser as _browser  # noqa: E402
 from hangar_desktop import vault_tools as _vault  # noqa: E402
 
+from hangar_desktop import work_tools as _work  # noqa: E402
+
+_work.register(mcp)
 _browser.register(mcp, _guard, who)
 _vault.register(mcp, who)
+
+if os.environ.get("HANGAR_COMPUTER") == "mac":    # Hangar for Mac: the screen is a macOS VM
+    from hangar_desktop import mac_screen
+    mac_screen.register(mcp, _guard, who)
+    _grab_png = mac_screen.grab_png               # noqa: F811 - thumbnails come from the VM too
 
 
 @mcp.custom_route("/healthz", methods=["GET"])

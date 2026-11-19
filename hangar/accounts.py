@@ -17,14 +17,13 @@ from __future__ import annotations
 
 import io
 import re
-import shutil
 import tarfile
 import time
 from dataclasses import dataclass
 
 from docker.errors import NotFound
 
-from hangar.engine import BASE_IMAGE, LABEL, Engine
+from hangar.engine import BASE_IMAGE, LABEL, Engine, run_argv
 
 ACCT_LABEL = "dev.hangar.account"
 MOUNT = "/hangar/account"
@@ -128,17 +127,16 @@ class Accounts:
         so it goes through the docker/podman CLI rather than the API)."""
         if acct.provider not in LOGIN_CMD:
             raise ValueError(f"{acct.provider} accounts use an API key, not a login")
-        cli = shutil.which("podman") or shutil.which("docker")
-        if not cli:
-            raise RuntimeError("needs the docker or podman CLI on PATH")
         from hangar import harness
         env = sum((["-e", f"{k}={v}"] for k, v in ENV[acct.provider].items()), [])
         mounts = ({harness_volume: {"bind": harness.MOUNT.format(acct.harness)}} if harness_volume
                   else harness.mount(self.engine, acct.harness))
         hv = sum((["-v", f"{vol}:{m['bind']}:ro"] for vol, m in mounts.items()), [])
-        return [cli, "run", "--rm", "-it", "--name", f"hangar-login-{acct.name}-{int(time.time())}",
-                "-v", f"{acct.volume}:{MOUNT}", *hv, *env, "--entrypoint", "", BASE_IMAGE,
-                *LOGIN_CMD[acct.provider]]
+        argv = run_argv(["--rm", "-it", "--name", f"hangar-login-{acct.name}-{int(time.time())}",
+                         "-v", f"{acct.volume}:{MOUNT}", *hv, *env], BASE_IMAGE, list(LOGIN_CMD[acct.provider]))
+        if not argv:
+            raise RuntimeError("needs the docker or podman CLI on PATH")
+        return argv
 
     def set_api_key(self, acct: Account, key: str) -> None:
         """Write the key into the account volume without it ever appearing in a

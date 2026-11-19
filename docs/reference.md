@@ -417,10 +417,28 @@ window "Untitled 1 - LibreOffice Writer" (app soffice)
 It works for GTK and Qt apps and LibreOffice. For anything without an
 accessibility tree, agents fall back to screenshot + click.
 
+## Agent tools and skills
+
+Agents work the cheapest reliable way: commands and files first, then the web
+without a browser, then element-based browser and app tools when something
+needs real input, and computer use (screenshots and clicks) only when nothing
+else can do it.
+
+Every agent gets Hangar's **skills**, which explain all this: `hangar` (its
+computer, tools, teammates, reports, notes, sign-ins and limits) and, for the
+pilot, `hangar-pilot` (when to answer directly, how to split a job, pick
+models and write tasks, and how to answer). They live in
+`images/base/rootfs/opt/hangar/plugins/`. Claude Code loads them as plugins
+for each task (`--plugin-dir`), Codex finds them in `~/.agents/skills`, and
+local models get them in their system prompt.
+
 ## Desktop-control MCP tools
 
 | tool | what it does |
 |---|---|
+| `run_command` | a bash command in the agent's container (its workspace by default) |
+| `read_file`, `write_file` | files, relative to the workspace |
+| `web_search`, `web_fetch` | search the web and read pages or APIs without a browser (through the space's network rules) |
 | `screenshot` | PNG of the whole desktop |
 | `screen_info` | size, mouse position, active window title |
 | `click`, `move_mouse`, `drag`, `scroll` | mouse (screen pixels from top-left) |
@@ -430,7 +448,7 @@ accessibility tree, agents fall back to screenshot + click.
 | `report` | post a status update / final summary to the user |
 | `notes_search`, `notes_read`, `notes_write` | the user's notes, as far as Settings → Notes allows (see Notes) |
 
-### Browser tools (preferred for the web)
+### Browser tools (for sites that need input)
 
 Agents drive their Chromium through the DevTools protocol (port 9222, inside
 the container only). `browser_snapshot` returns the page as a short numbered

@@ -37,10 +37,17 @@ def patterns() -> list[str]:
     except OSError:
         return []
     if m != _cache["mtime"]:
-        with open(ALLOW_FILE) as f:
-            _cache["patterns"] = [ln.strip().lower().lstrip("*.") if ln.strip() != "*" else "*"
-                                  for ln in f if ln.strip() and not ln.startswith("#")]
-        _cache["mtime"] = m
+        # Just after the host replaces the file, a shared folder (Apple's virtiofs)
+        # can briefly fail to open it: retry a moment, else keep the last list.
+        for _ in range(10):
+            try:
+                with open(ALLOW_FILE) as f:
+                    _cache["patterns"] = [ln.strip().lower().lstrip("*.") if ln.strip() != "*" else "*"
+                                          for ln in f if ln.strip() and not ln.startswith("#")]
+                _cache["mtime"] = m
+                break
+            except OSError:
+                time.sleep(0.15)
     return _cache["patterns"]
 
 
@@ -49,11 +56,14 @@ def allowed(host: str, port: int) -> tuple[bool, bool]:
     host = host.lower().rstrip(".")
     if f"{host}:{port}" in ALWAYS:
         return True, True
-    for p in patterns():
-        if p == "*":
-            return True, False
-        if host == p or host.endswith("." + p):
-            return True, True
+    for fresh in (False, True):
+        if fresh:                  # before refusing, read the file again: a shared folder's
+            _cache["mtime"] = -1.0   # timestamp can lag a just-made edit (Apple's virtiofs)
+        for p in patterns():
+            if p == "*":
+                return True, False
+            if host == p or host.endswith("." + p):
+                return True, True
     return False, False
 
 
