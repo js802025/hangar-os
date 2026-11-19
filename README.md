@@ -33,8 +33,8 @@ taskbar, the shortcuts and the notifications.
 
 <table>
 <tr>
-<td width="50%"><img src="docs/images/ask.png" alt="Asking Hangar about the page you're reading"><br>
-<b>Hand it off the moment you think of it.</b> One shortcut from any app, with what's on your screen attached if you like. Type or speak.</td>
+<td width="50%"><img src="docs/images/ask.png" alt="Asking Hangar from the desktop"><br>
+<b>Hand it off the moment you think of it.</b> One shortcut from anywhere on the system, with a screenshot or the window you're in attached if you like. Type or speak.</td>
 <td width="50%"><img src="docs/images/plan.png" alt="The pilot starting a crew"><br>
 <b>A crew takes it from there.</b> The pilot breaks the job down, starts agents with the right roles, and keeps you posted in one conversation.</td>
 </tr>

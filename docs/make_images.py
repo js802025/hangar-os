@@ -22,7 +22,7 @@ V = ROOT / "out/video"
 SHOTS = {   # name: (source, framed on the wallpaper?)
     "hero": (V / "space/0076.png", True),
     "ask": (V / "ask/0046.png", True),
-    "plan": (V / "plan/0050.png", True),
+    "plan": (V / "plan/0052.png", True),
     "space": (V / "space/0076.png", True),
     "overview": (V / "overview/0018.png", True),
     "approve": (V / "approve/0010.png", True),

@@ -1,7 +1,7 @@
 """Capture the frames for the Hangar demo video: one real-ish task, start to finish.
 
-The story: you're reading a guide to buying a used road bike, press the Ask
-shortcut and ask Hangar to find one under $500 near Boston, shortlist three
+The story: from the Hangar OS desktop, you press the Ask shortcut and ask
+Hangar to find one under $500 near Boston, shortlist three
 and message the best seller. The pilot starts a crew (a researcher browsing
 listings, another reading reviews of the likely picks), other jobs keep running, a
 sign-in waits for your OK, you step in for a moment, review what changed,
@@ -211,7 +211,7 @@ def setup_demo() -> None:
         threads.add(t["id"], "pilot", answer)
         time.sleep(0.05)
     # The page you're reading when you ask (shown from the coder space's browser, then moved on).
-    ts = [background("coder", "coder", [("browser_navigate", {"url": f"{SITE}/guide.html"}), ("wait", {"seconds": 2})]),
+    ts = [background("coder", "coder", [("browser_navigate", {"url": f"{SITE}/review.html"})]),
           background("inbox", "inbox", [("browser_navigate", {"url": f"{SITE}/inbox.html"})]),
           background("trip", "trip", [("browser_navigate", {"url": f"{SITE}/trip.html"})]),
           background("expenses", "expenses", [("open_app", {"name": "libreoffice", "args":
@@ -227,17 +227,48 @@ def setup_demo() -> None:
         asyncio.run(drive(n, who, [("report", {"message": msg, "status": "working"})]))
 
 
-def guide_shot():
-    """A screenshot of 'your screen' (the guide), for the Ask scene."""
-    import httpx
-    from PySide6.QtGui import QImage
-    r = httpx.get(f"{DAEMON}/api/agents/coder/screenshot.png", headers={"Authorization": f"Bearer {auth.admin_token()}"},
-                  timeout=20)
-    img = QImage()
-    img.loadFromData(r.content)
-    path = TMP / "guide.png"
-    img.save(str(path))
-    return img, path
+def os_desktop(w: int, h: int):
+    """The Hangar OS desktop as you'd see it after logging in: the wallpaper and a
+    Plasma-style panel with Hangar, Notes and Passwords pinned and ✦ in the tray."""
+    from PySide6.QtCore import QRectF, Qt
+    from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPainterPath
+    img = QImage(w, h, QImage.Format_RGB32)
+    p = QPainter(img)
+    p.setRenderHint(QPainter.Antialiasing)
+    p.setRenderHint(QPainter.SmoothPixmapTransform)
+    wall = QImage(str(ROOT / "os/files/usr/share/wallpapers/Hangar/contents/images/3840x2160.png"))
+    p.drawImage(QRectF(0, 0, w, h), wall.scaled(w, h, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation))
+    ph = 52
+    p.fillRect(QRectF(0, h - ph, w, ph), QColor(16, 19, 26, 235))
+    p.fillRect(QRectF(0, h - ph, w, 1), QColor(255, 255, 255, 18))
+    icons = ROOT / "os/files/usr/share/icons/hicolor/256x256/apps"
+    x = 14
+    # app launcher
+    p.setPen(Qt.NoPen)
+    p.setBrush(QColor(255, 255, 255, 22))
+    p.drawRoundedRect(QRectF(x, h - ph + 8, 36, 36), 9, 9)
+    path = QPainterPath()
+    cx, cy = x + 18, h - ph + 26
+    path.moveTo(cx - 10, cy + 5); path.lineTo(cx, cy - 6); path.lineTo(cx + 10, cy + 5)
+    from PySide6.QtGui import QPen
+    p.setPen(QPen(QColor("#eceef4"), 2.6, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+    p.setBrush(Qt.NoBrush)
+    p.drawPath(path)
+    x += 52
+    for name in ("spaces", "notes", "passwords"):
+        icon = QImage(str(icons / f"dev.hangar.{name}.png"))
+        p.drawImage(QRectF(x, h - ph + 8, 36, 36), icon)
+        x += 46
+    # tray and clock
+    f = QFont("Inter")
+    f.setPixelSize(15)
+    p.setFont(f)
+    p.setPen(QColor("#7c9cff"))
+    p.drawText(QRectF(w - 150, h - ph, 30, ph), Qt.AlignCenter, "✦")
+    p.setPen(QColor("#c9cfdb"))
+    p.drawText(QRectF(w - 110, h - ph, 96, ph), Qt.AlignCenter, "9:41 AM")
+    p.end()
+    return img
 
 
 def main() -> None:
@@ -257,30 +288,30 @@ def main() -> None:
         setup_demo()
         eng.exec("bikes", ["bash", "-c", "cd ~/workspace && printf 'Look at: PedalSwap, Craigslist\\n' > todo.txt"])
         snapshots.take(eng, "bikes", "before: find a used road bike")
-        guide, guide_path = guide_shot()
-        asyncio.run(drive("coder", "coder", [("browser_navigate", {"url": f"{SITE}/review.html"})]))
 
-        # 1. Ask from anywhere: the panel over the page you're reading.
+        # 1. Ask from anywhere: the Hangar OS desktop, then the Ask panel (Meta+Space).
         from hangar.apps.ask import AskPanel
         p = AskPanel()
-        ctx = {"app": "Firefox", "title": "Buying a used road bike · Cycle Commute",
-               "url": "https://cyclecommute.example/used-road-bike", "selection": ""}
-        p.open(guide_path, ctx, {"screenshot", "url"})
+        p.open(None, {}, set())
         pump(0.3)
+        desk = os_desktop(1600, 1000)
 
         def over_screen() -> QImage:
-            img = guide.scaled(1600, 1000).convertToFormat(QImage.Format_RGB32)
-            panel = p.grab().toImage()
-            q = QPainter(img)
-            q.drawImage(QPoint((img.width() - panel.width()) // 2, 150), panel)
-            q.end()
+            img = desk.copy()
+            if typed["shown"]:
+                panel = p.grab().toImage()
+                q = QPainter(img)
+                q.drawImage(QPoint((img.width() - panel.width()) // 2, 230), panel)
+                q.end()
             return img
-        typed = {"i": 0}
+        typed = {"i": 0, "shown": False}
 
-        def type_more(_t: float) -> None:
-            typed["i"] = min(len(ASK), typed["i"] + 4)
-            p.input.setPlainText(ASK[:typed["i"]])
-        record("ask", over_screen, 7.5, every=1 / 12, script=type_more)
+        def type_more(t: float) -> None:
+            typed["shown"] = t > 1.3
+            if t > 1.9:
+                typed["i"] = min(len(ASK), typed["i"] + 4)
+                p.input.setPlainText(ASK[:typed["i"]])
+        record("ask", over_screen, 8.5, every=1 / 12, script=type_more)
 
         # Your desktop's Hangar: the conversation with the pilot.
         QQuickStyle.setStyle("Basic")
@@ -308,7 +339,7 @@ def main() -> None:
 
         # 2. The pilot plans it and puts a crew on it.
         chat = threads.create("Road bike under $500")
-        threads.add(chat["id"], "user", ASK, screenshot=True)
+        threads.add(chat["id"], "user", ASK)
         threads.set_active(chat["id"])
         threads.link_space("bikes", chat["id"])
         bridge.refresh()

@@ -28,8 +28,8 @@ SCENES = [
     ("title", 4.0, "", "", 0),
     ("why", 5.0, "Most of your to-do list happens on a computer.",
      "Hangar hands it to a crew of AI agents that use one, just like you do.", 0),
-    ("ask", 7.0, "Hand it off the moment you think of it",
-     "Ask about whatever is on your screen. No setup, no integrations.", 12),
+    ("ask", 8.0, "Hand it off the moment you think of it",
+     "One shortcut, from anywhere on your computer. Type it or say it.", 5.5),
     ("plan", 8.0, "A crew takes it from there",
      "Your pilot breaks the job down and puts agents on it, each with a computer of its own.", 12),
     ("space", 12.5, "They work the way you do",
@@ -187,6 +187,40 @@ def text_alpha(t: float, dur: float, first: bool, last: bool) -> float:
     return max(0.0, min(a_in, a_out))
 
 
+KEYS = {"ask": (0.35, 1.45, ["Meta", "Space"])}
+
+
+def draw_keys(p: QPainter, keys, a: float) -> None:
+    """Keycaps for the shortcut being pressed."""
+    if a <= 0:
+        return
+    p.save()
+    p.setOpacity(a)
+    f = QFont("Inter")
+    f.setPixelSize(30)
+    f.setWeight(QFont.DemiBold)
+    p.setFont(f)
+    widths = [max(110, p.fontMetrics().horizontalAdvance(k) + 64) for k in keys]
+    plus = 54
+    total = sum(widths) + plus * (len(keys) - 1)
+    x, y = (W - total) / 2, H / 2 - 80 - 10 * (1 - a)
+    for i, (k, kw) in enumerate(zip(keys, widths)):
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(0, 0, 0, 90))
+        p.drawRoundedRect(QRectF(x, y + 8, kw, 84), 16, 16)
+        p.setBrush(QColor(28, 33, 45, 245))
+        p.setPen(QPen(QColor(255, 255, 255, 40), 1.4))
+        p.drawRoundedRect(QRectF(x, y, kw, 84), 16, 16)
+        p.setPen(QColor("#eceef4"))
+        p.drawText(QRectF(x, y, kw, 84), Qt.AlignCenter, k)
+        x += kw
+        if i < len(keys) - 1:
+            p.setPen(QColor("#a9b4cc"))
+            p.drawText(QRectF(x, y, plus, 84), Qt.AlignCenter, "+")
+            x += plus
+    p.restore()
+
+
 def draw_assign(p: QPainter, rows, a: float) -> None:
     """A small 'the pilot gave out these tasks' card over the scene."""
     if a <= 0:
@@ -311,6 +345,9 @@ def main() -> None:
                 if img is not None and not img.isNull():
                     draw_window(p, img, lt, s.seconds)
             p.restore()
+            if s.name in KEYS:
+                k0, k1, keys = KEYS[s.name]
+                draw_keys(p, keys, min(ease((lt - k0) / 0.25), ease((k1 - lt) / 0.25)))
             if s.name in ASSIGN:
                 a0, a1, rows = ASSIGN[s.name]
                 draw_assign(p, rows, min(ease((lt - a0) / 0.35), ease((a1 - lt) / 0.35)))

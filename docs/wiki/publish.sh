@@ -3,7 +3,9 @@
 # The wiki must exist first: on GitHub, open the Wiki tab and save any first page.
 #   docs/wiki/publish.sh [owner/repo]
 set -euo pipefail
-repo="${1:-$(git remote get-url origin | sed -E "s#(git@github.com:|https://github.com/)##; s#\.git$##")}"
+origin="$(git -C "$(dirname "$0")" remote get-url origin)"
+origin="${origin#git@github.com:}"; origin="${origin#https://github.com/}"
+repo="${1:-${origin%.git}}"
 here="$(cd "$(dirname "$0")" && pwd)"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
