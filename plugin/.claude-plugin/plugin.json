@@ -1,0 +1,8 @@
+{
+  "name": "hangar",
+  "version": "1.0.0",
+  "description": "Computer use without your screen: hand Hangar a task in a Linux desktop or a Mac VM, or drive a Mac VM yourself. Hangar's app shows what it's doing.",
+  "mcpServers": {
+    "hangar": {"command": "${CLAUDE_PLUGIN_ROOT}/bin/hangar-mcp", "args": []}
+  }
+}

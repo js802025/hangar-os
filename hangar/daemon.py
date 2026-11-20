@@ -95,7 +95,7 @@ def agent_dict(a: Agent) -> dict:
     return {"name": a.name, "state": st["state"], "status": a.status, "flavor": a.flavor,
             "model": a.model, "account": a.account, "task": st["task"], "report": st["report"],
             "created": a.created, "shares": a.shares, "agents": st.get("agents", []),
-            "network": a.network, "computer": a.computer, "vm": a.vm, "view": f"/agents/{a.name}/view",
+            "network": a.network, "computer": a.computer, "vm": a.vm, "via": a.via, "view": f"/agents/{a.name}/view",
             "mcp": f"/agents/{a.name}/mcp"}
 
 

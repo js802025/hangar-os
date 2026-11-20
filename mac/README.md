@@ -87,6 +87,10 @@ told it's on a Mac.
   with it, freeing one of Apple's two slots.
 - **Sign-ins:** the vault can't fill a password into a Mac, so the agent asks
   you to sign in on it ("Take over the Mac" in the menu).
+- **For your other agents:** the `hangar` plugin (`plugin/`, `hangar mcp`) is an MCP server (like
+  cua-driver) that lets Claude Code or any MCP client either hand Hangar a
+  task on a Mac (`do_task(..., computer="mac")`) or drive a Mac VM itself
+  (`mac_screenshot`, `mac_click`, ...). See docs/reference.md.
 - **Not yet tested against a real VM:** the terminal-mac commands follow its
   documentation and are covered by a test with a fake `terminal-mac`
   (`tests/smoke_mac.py`).

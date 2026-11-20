@@ -147,6 +147,7 @@ class Agent:
     network: str = "open"     # "open" or "allowlist"
     computer: str = "linux"   # "linux", or "mac" when its screen is a macOS VM
     vm: str = ""              # that VM's name
+    via: str = ""             # the outside client that started it (`hangar mcp`), if any
 
     # Direct (host-only) addresses. Both need the agent's token; users go
     # through the daemon instead (hangar view / the Spaces UI).
@@ -320,6 +321,7 @@ class Engine:
             network=net_mode,
             computer=c.labels.get(f"{LABEL}.computer", "linux"),
             vm=c.labels.get(f"{LABEL}.vm", ""),
+            via=c.labels.get(f"{LABEL}.via", ""),
         )
 
     def flavors(self) -> list[dict]:

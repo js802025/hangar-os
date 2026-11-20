@@ -693,6 +693,15 @@ def daemon_token():
     print(auth.admin_token())
 
 
+@app.command()
+def mcp():
+    """Serve Hangar to your other agents over MCP (stdio), like cua-driver:
+    `claude mcp add hangar -- hangar mcp`. They can hand Hangar a task (in a
+    Linux desktop or a Mac VM) or drive a Mac VM themselves."""
+    from hangar import mcp_server
+    mcp_server.serve()
+
+
 # -- teams and the pilot ---------------------------------------------------------
 
 agent_app = typer.Typer(help="Agents inside a space (a space can hold a team).", no_args_is_help=True)

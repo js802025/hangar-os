@@ -1,0 +1,11 @@
+{
+  "name": "hangar",
+  "owner": {"name": "Hangar"},
+  "plugins": [
+    {
+      "name": "hangar",
+      "source": "./plugin",
+      "description": "Computer use without your screen: hand Hangar a task in a Linux desktop or a Mac VM, or drive a Mac VM yourself"
+    }
+  ]
+}

@@ -361,6 +361,37 @@ posting their own reports with their own token. `hangar view` opens
 browser. The tokens are HMACs of one random secret in
 `~/.local/state/hangar/secret` (mode 0600), which never enters a container.
 
+## Hangar for your other agents (`hangar mcp`)
+
+`hangar mcp` serves Hangar over MCP (stdio), the way cua-driver does, so an
+agent outside Hangar (Claude Code, Codex, Cursor) can get computer work done
+without touching your screen:
+
+It's packaged as a plugin (`plugin/`: the server plus a skill on when and how
+to use it), so in Claude Code:
+
+```bash
+claude plugin marketplace add js802025/hangar-os
+claude plugin install hangar@hangar
+```
+
+Any other MCP client (Codex, Cursor, ...) runs `plugin/bin/hangar-mcp` (or
+`hangar mcp`) as a stdio server; the launcher finds Hangar OS's `hangar` or
+Hangar for Mac's checkout. It runs as you, like the CLI, so it needs no token.
+Hangar's app is the interface for what these agents do: the spaces they start
+show up there ("started by Claude Code"), to watch and take over.
+
+| tool | what it does |
+|---|---|
+| `do_task(task, computer, space, model, wait_seconds)` | Hangar does the job in a space (a Linux desktop, or `computer="mac"` for a Mac VM) and returns the agent's final report |
+| `wait(space)`, `look(space)` | wait for the result; see the space's screen and latest reports |
+| `spaces()`, `stop_space(space, delete)` | list; stop or remove |
+| `mac_start`, `mac_screenshot`, `mac_click`, `mac_type`, `mac_key`, `mac_scroll`, `mac_drag` | drive a Mac VM yourself, step by step (coordinates are the screenshot's pixels) |
+| `mac_show`, `mac_stop` | open the VM's window for you (to watch or sign in); shut it down |
+
+`do_task` uses the pilot's model unless given one. A Mac VM lent to a space
+isn't driven directly; `look` that space instead.
+
 ## Flavors
 
 Every agent starts from the base image (Chromium, a terminal, the Mousepad

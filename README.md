@@ -117,6 +117,18 @@ Every part of Hangar also runs on a Mac with Docker, for development:
 `make images && uv sync --extra apps`, then `uv run hangar open`. See
 [development.md](docs/development.md).
 
+### From your own agent
+
+Bring your own client: the `hangar` plugin lets Claude Code (or any MCP
+client) hand Hangar computer work, on a Linux desktop or a Mac VM, while you
+watch it in Hangar's app.
+
+```
+/plugin install hangar --marketplace js802025/hangar-os
+```
+
+See [reference.md](docs/reference.md#hangar-for-your-other-agents-hangar-mcp).
+
 ## Documentation
 
 | | |

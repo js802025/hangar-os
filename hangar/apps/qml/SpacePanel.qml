@@ -37,6 +37,8 @@ Rectangle {
                 }
                 Text { text: (s.agents ? s.agents.length : 0) + (s.agents && s.agents.length === 1 ? " agent" : " agents")
                              + (s.flavor && s.flavor !== "base" ? " · " + s.flavor : "")
+                             + (s.computer === "mac" ? " · Mac" : "")
+                             + (s.via ? " · started by " + s.via : "")
                              + (s.network && s.network !== "open" && s.network !== "internet" ? " · limited internet" : "")
                        color: Theme.dim; font.pixelSize: 12 }
             }

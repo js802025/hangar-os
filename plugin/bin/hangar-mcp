@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Start `hangar mcp` (stdio) for any MCP client: Claude Code (this plugin),
+# Codex, Cursor... Finds Hangar wherever it is: `hangar` on PATH (Hangar OS,
+# or a pip/uv install), else Hangar for Mac (Hangar.app knows its checkout).
+# Only the MCP server writes to stdout.
+set -euo pipefail
+if command -v hangar >/dev/null; then
+    exec hangar mcp
+fi
+if [[ "$(uname)" == Darwin ]]; then
+    for app in /Applications/Hangar.app "$HOME/Applications/Hangar.app" \
+               $(mdfind "kMDItemCFBundleIdentifier == 'dev.hangar.mac'" 2>/dev/null); do
+        repo=$(/usr/libexec/PlistBuddy -c "Print :HangarRepo" "$app/Contents/Info.plist" 2>/dev/null || true)
+        if [[ -n "$repo" && -x "$repo/mac/bin/hangar" ]]; then
+            exec "$repo/mac/bin/hangar" mcp
+        fi
+    done
+fi
+echo "Hangar isn't installed here: install Hangar OS, or build Hangar for Mac (mac/build-app.sh)." >&2
+exit 1
