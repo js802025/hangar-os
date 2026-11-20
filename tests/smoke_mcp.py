@@ -8,6 +8,8 @@ Mac VM (a 2560x1600 Retina screen), and a real MCP client talks to
   2. mac_screenshot comes back shrunk to 1280 wide.
   3. Clicks at the screenshot's pixels land at the VM's real pixels; keys and
      text reach the VM.
+  4. Outside agents get the pilot's limits: a model the user didn't allow is
+     refused before anything starts.
 
   uv run --extra apps python tests/smoke_mcp.py
 """
@@ -41,6 +43,10 @@ print(json.dumps({{"ok": True}}))
 """)
 FAKE.chmod(FAKE.stat().st_mode | stat.S_IEXEC)
 ROOT = Path(__file__).resolve().parents[1]
+(TMP / "config").mkdir()
+(TMP / "config/settings.json").write_text(json.dumps({"orchestration": {
+    "pilot": {"model": "claude", "account": ""}, "allowed": [{"model": "codex", "account": ""}],
+    "max_agents": 2, "internet": "open"}}))
 
 
 def calls() -> list[list[str]]:
@@ -76,6 +82,11 @@ async def main() -> None:
         assert acts == [["click", "200", "100"], ["key", "cmd+space"], ["type", "--", "Notes"],
                         ["click", "20", "40", "--double"]], acts
         print("3. clicks land at the VM's real pixels; keys and text reach the VM: ok")
+
+        res = await s.call_tool("do_task", {"task": "open Notes", "model": "local:big-model"})
+        text = res.content[0].text
+        assert res.isError and "isn't one the user allowed" in text and "codex, claude" in text, text
+        print("4. outside agents get the pilot's limits: an unallowed model is refused: ok")
     print("PASS")
 
 

@@ -84,6 +84,44 @@ def _default_model() -> str:
     return o["pilot"].get("model") or next((a["model"] for a in o["allowed"]), "")
 
 
+# -- the user's limits ---------------------------------------------------------------------
+# Outside agents get the pilot's limits (Settings -> Orchestration), and share its budget:
+# only models the user allowed (or the pilot's own), at most max_agents running agents across
+# the pilot's spaces and theirs, the internet policy the user chose for new spaces, and they
+# change only spaces an outside agent started. They can read and look at any space.
+
+def _started_by_agent(name: str) -> bool:
+    labels = eng().client.containers.get(f"hangar-{name}").labels
+    return bool(labels.get(f"{LABEL}.via")) or labels.get(pilot.CREATED_BY) == pilot.PILOT
+
+
+def _running_agents() -> int:
+    from hangar import spaces as spaces_mod
+    return sum(len(spaces_mod.roster(eng(), a.name)) for a in eng().list()
+               if a.status == "running" and _started_by_agent(a.name))
+
+
+def _check_room(adding: int) -> None:
+    limit, n = pilot.load()["max_agents"], _running_agents()
+    if n + adding > limit:
+        raise RuntimeError(f"that would run {n + adding} agents; the user's limit is {limit} "
+                           "(Hangar Settings, Orchestration). Reuse or stop a space first.")
+
+
+def _check_model(model: str) -> None:
+    o = pilot.load()
+    ok = [a["model"] for a in o["allowed"]] + ([o["pilot"]["model"]] if o["pilot"].get("model") else [])
+    if model not in ok:
+        raise RuntimeError(f"model {model!r} isn't one the user allowed. Allowed: {', '.join(ok) or 'none yet'} "
+                           "(Hangar Settings, Orchestration)")
+
+
+def _check_mine(space: str) -> None:
+    if not eng().get(space).via:
+        raise RuntimeError(f"{space} wasn't started by an outside agent, so it's the user's to change; "
+                           "start your own with do_task, or look() at it")
+
+
 def _wait(space: str, agent: str, seen: int, seconds: float) -> str:
     """Wait for the agent's final report (or a question for the user) after report number `seen`."""
     end = time.time() + max(0, seconds)
@@ -160,23 +198,33 @@ def build() -> FastMCP:
 
     @mcp.tool()
     async def do_task(task: str, ctx: Context, computer: str = "linux", space: str = "", model: str = "",
-                      wait_seconds: int = 600) -> str:
+                      sites: list[str] | None = None, wait_seconds: int = 600) -> str:
         """Have Hangar do a task in one of its spaces and return the agent's final report.
         task: the whole job, in plain words, with what "done" looks like.
         computer: "linux" (a desktop in a container, right for nearly everything) or "mac" /
         "mac:VM" (a macOS VM, only for Mac apps; at most 2 run at once).
         space: reuse this space (its files and sign-ins carry over); default: a new one.
-        model: e.g. "claude", "codex", "local:<model>"; default: the user's pilot model.
+        model: e.g. "claude", "codex", "local:<model>"; default: the user's pilot model. Only
+        models the user allowed in Hangar's Settings.
+        sites: domains a new space may reach, when the user limits new spaces' internet.
         wait_seconds: how long to wait here; past that, call wait(space)."""
         info = ctx.session.client_params.clientInfo if ctx.session.client_params else None
         via = CLIENTS.get(info.name, info.name) if info else "another agent"
 
         def start() -> tuple[str, str, int]:
+            m = model or _default_model()
+            if not space:
+                if not m:
+                    raise RuntimeError("no model: pass model=, or set the pilot's model in Hangar's Settings")
+                _check_model(m)                 # before anything starts
             e = eng()
             daemonctl.ensure_daemon()           # screen tools, reports and notifications go through it
             if space:
+                _check_mine(space)
                 a = e.get(space)
                 if a.status != "running":
+                    from hangar import spaces as spaces_mod
+                    _check_room(len(spaces_mod.roster(e, space)))
                     e.start(space)
                     e.wait_ready(space, timeout=180)
                 seen = len(_reports(space))
@@ -184,11 +232,11 @@ def build() -> FastMCP:
                 return space, space, seen
             name = "task-" + (re.sub(r"[^a-z0-9]+", "-", task.lower())[:18].strip("-") or "job") \
                    + "-" + secrets.token_hex(2)
-            m = model or _default_model()
-            if not m:
-                raise RuntimeError("no model: pass model=, or set the pilot's model in Hangar's Settings")
+            _check_room(1)
+            from hangar.network import clean_domain
             from hangar.prepare import prepare
-            spec = AgentSpec(name=name, model=m, task=task, computer=computer or "linux",
+            allow = [clean_domain(d) for d in sites or []] if pilot.load()["internet"] == "allowlist" else None
+            spec = AgentSpec(name=name, model=m, task=task, computer=computer or "linux", allow=allow,
                              labels={f"{LABEL}.via": via[:40]})
             prepare(e, spec)
             e.create(spec)
@@ -226,8 +274,11 @@ def build() -> FastMCP:
 
     @mcp.tool()
     async def stop_space(space: str, delete: bool = False) -> str:
-        """Stop a space (and its Mac VM). delete=True also removes it and its files."""
-        await _thread(eng().destroy if delete else eng().stop, space)
+        """Stop a space you started (and its Mac VM). delete=True also removes it and its files."""
+        def go():
+            _check_mine(space)
+            (eng().destroy if delete else eng().stop)(space)
+        await _thread(go)
         return f"{'Deleted' if delete else 'Stopped'} {space}."
 
     # -- drive a Mac VM yourself ------------------------------------------------------------

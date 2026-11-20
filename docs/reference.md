@@ -389,7 +389,12 @@ show up there ("started by Claude Code"), to watch and take over.
 | `mac_start`, `mac_screenshot`, `mac_click`, `mac_type`, `mac_key`, `mac_scroll`, `mac_drag` | drive a Mac VM yourself, step by step (coordinates are the screenshot's pixels) |
 | `mac_show`, `mac_stop` | open the VM's window for you (to watch or sign in); shut it down |
 
-`do_task` uses the pilot's model unless given one. A Mac VM lent to a space
+Outside agents get the pilot's limits (Settings, Orchestration) and share its
+budget: only the models you allowed (or the pilot's own), at most `max_agents`
+running agents across the pilot's spaces and theirs, your internet policy for
+new spaces, and they can give tasks to or stop only spaces an outside agent
+started (any space can be listed and looked at). `do_task` uses the pilot's
+model unless given one. A Mac VM lent to a space
 isn't driven directly; `look` that space instead.
 
 ## Flavors

@@ -39,3 +39,8 @@ space you start shows up marked with your client's name.
 - Stop what you started: `stop_space(space)` when done (`delete=True` only if
   the user doesn't need its files), `mac_stop` for a VM you booted.
 - A Mac VM that's lent to a space can't be driven directly; `look` that space.
+- You get the same limits as the user's pilot (set in Hangar's Settings): only
+  the models they allowed, a cap on running agents shared with the pilot, their
+  internet policy for new spaces (pass `sites` when it's limited), and you can
+  give tasks to or stop only spaces an outside agent started. If you hit a
+  limit, tell the user; don't work around it.

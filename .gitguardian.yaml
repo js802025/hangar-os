@@ -1,0 +1,9 @@
+# Made-up values the smoke tests use on purpose (a vault test password and a
+# fake Anthropic key); nothing real. Only these exact values are ignored.
+version: 2
+secret:
+  ignored_matches:
+    - name: vault smoke test password (tests/smoke_vault.py)
+      match: Tr0ub4dor-horse-STAPLE
+    - name: fake API key (tests/smoke_m3.py)
+      match: sk-ant-api03-FAKE-TEST-KEY
